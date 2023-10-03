@@ -43,18 +43,19 @@ type AssignTaskArgs struct {
 }
 
 type AssignTaskReply struct {
-	Task     Task
-	NMap     int
-	NReduce  int
-	Filename string
+	Task      Task
+	NMap      int
+	NReduce   int
+	Filenames []string // 对于map来说是输入文件的名字， 对于reduce来说是中间文件名字
 }
 
 type TaskDoneArgs struct {
-	Task Task
+	Task      Task
+	Filenames []string
 }
 
 type TaskDoneReply struct {
-	Over bool // 整个job是否已经结束
+	Over bool // 整个job是否已经结束 (其实有了FinishedType,就不需要这个over了,如果没有任务AssignTask会返回FinishedType)
 }
 
 // Cook up a unique-ish UNIX-domain socket name

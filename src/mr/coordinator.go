@@ -1,11 +1,13 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -33,13 +35,18 @@ type Coordinator struct {
 	files     []string
 	taskQueue chan Task
 
+	// 保存Map生成的中间文件的名字，由master来保存中间文件名，并传递给reduce)
+	intermediateFiles [][]string
+	// 由读写锁保证安全，map阶段写， reduce阶段只读
+	rwlock sync.RWMutex
+
 	jobState  JobState // 当前job处于哪一状态
 	stateLock sync.Mutex
 	stateCond *sync.Cond
 
 	MapProgress    []TaskState // 每个任务的状态。 如果任务的状态是TaskWaiting，则他一定在taskQueue队列中
 	ReduceProgress []TaskState
-	ProgressLock   sync.Mutex
+	ProgressLock   sync.Mutex // 同一个锁 锁两个队列
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -72,7 +79,14 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 				reply.NMap = c.nMap
 				reply.NReduce = c.nReduce
 				if task.Type == MapType {
-					reply.Filename = c.files[task.Number]
+					// c.files一经初始化之后就是只读的，不需要上锁，而且可以直接用引用
+					reply.Filenames = c.files[task.Number : task.Number+1]
+				} else if task.Type == ReduceType {
+					// 获取中间文件名需要上读锁，不能用引用，应该用深拷贝 （其实reduce阶段都是读，但为了安全，还是上锁吧）
+					c.rwlock.RLock()
+					reply.Filenames = make([]string, len(c.intermediateFiles[task.Number]))
+					copy(reply.Filenames, c.intermediateFiles[reply.Task.Number])
+					c.rwlock.RUnlock()
 				}
 
 				go MonitorTask(c, task)
@@ -100,6 +114,25 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	if args.Task.Type == MapType {
 		if c.MapProgress[args.Task.Number] != TaskFinished {
 			c.MapProgress[args.Task.Number] = TaskFinished
+			// 保存map产生的临时文件名
+			c.rwlock.Lock()
+			for _, filename := range args.Filenames {
+				var numstr string
+				for i := len(filename) - 1; i >= 0; i-- {
+					if filename[i] >= '0' && filename[i] <= '9' {
+						numstr = string(filename[i]) + numstr
+					} else {
+						break
+					}
+				}
+				idx, err := strconv.Atoi(numstr)
+				if err != nil {
+					fmt.Printf("atoi failed %s %s\n", filename, numstr)
+				}
+				c.intermediateFiles[idx] = append(c.intermediateFiles[idx], filename)
+			}
+			c.rwlock.Unlock()
+			// 判断map任务是否结束，如果结束，转至reduce状态
 			flag := true
 			for _, taskType := range c.MapProgress {
 				if taskType != TaskFinished {
@@ -148,13 +181,17 @@ func MonitorTask(c *Coordinator, task Task) {
 	c.ProgressLock.Lock()
 	if task.Type == MapType {
 		if c.MapProgress[task.Number] == TaskRunning {
+			fmt.Printf("Map %d timeout\n", task.Number)
 			c.MapProgress[task.Number] = TaskWaiting
 			c.taskQueue <- task
+			c.stateCond.Broadcast() // 唤醒其他goroutine处理task
 		}
 	} else if task.Type == ReduceType {
 		if c.ReduceProgress[task.Number] == TaskRunning {
+			fmt.Printf("Reduce %d timeout\n", task.Number)
 			c.ReduceProgress[task.Number] = TaskWaiting
 			c.taskQueue <- task
+			c.stateCond.Broadcast() // 唤醒其他goroutine处理task
 		}
 	}
 	c.ProgressLock.Unlock()
@@ -209,6 +246,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.nMap = len(files) // 让map任务编号和文件个数相同 (也可以一个map编号对应多个文件, 让c.files变成[][]string即可)
 	c.files = files
 	c.jobState = MapJob
+
+	c.intermediateFiles = make([][]string, c.nReduce)
 
 	c.MapProgress = make([]TaskState, c.nMap)
 	for i := 0; i < len(c.MapProgress); i++ {

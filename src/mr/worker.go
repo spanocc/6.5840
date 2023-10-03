@@ -67,25 +67,31 @@ func Worker(mapf func(string, string) []KeyValue,
 func MapWorker(mapf func(string, string) []KeyValue, reply *AssignTaskReply) {
 	// 对传入的filename文件做map操作，结果放在intermediate中
 	intermediate := []KeyValue{}
-	file, err := os.Open(reply.Filename)
-	if err != nil {
-		log.Fatalf("cannot open %v", reply.Filename)
+	for _, filename := range reply.Filenames {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		kva := mapf(filename, string(content))
+		intermediate = append(intermediate, kva...)
 	}
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Fatalf("cannot read %v", reply.Filename)
-	}
-	file.Close()
-	kva := mapf(reply.Filename, string(content))
-	intermediate = append(intermediate, kva...)
 	// 创建nReduce个文件, 设置为json格式
-	fileList := make([]*os.File, reply.NReduce)
+	fileList := make([]*os.File, reply.NReduce) // 临时文件
 	jsonList := make([]*json.Encoder, reply.NReduce)
+	outFiles := []string{}    // 中间文件名
+	pathname, _ := os.Getwd() // 获取当前路径（把文件输出到main路径下）
 	for i := 0; i < reply.NReduce; i++ {
 		oname := fmt.Sprintf("mr-%d-%d", reply.Task.Number, i)
-		fileList[i], err = os.Create(oname)
+		outFiles = append(outFiles, oname)
+		var err error
+		fileList[i], err = ioutil.TempFile(pathname, oname) // 在main路径下生成临时文件
 		if err != nil {
-			log.Fatalf("cannot create %v", oname)
+			log.Fatalf("cannot create tempfile %v", oname)
 		} else {
 			jsonList[i] = json.NewEncoder(fileList[i])
 			defer fileList[i].Close()
@@ -99,19 +105,32 @@ func MapWorker(mapf func(string, string) []KeyValue, reply *AssignTaskReply) {
 			log.Fatalf("cannot encode %s", fmt.Sprintf("mr-%d-%d", reply.Task.Number, y))
 		}
 	}
+
+	// 原子的改名
+	for i := 0; i < reply.NReduce; i++ {
+		err := os.Rename(fileList[i].Name(), pathname+"/"+outFiles[i])
+		if err != nil {
+			fmt.Printf("rename failed! %s -> %s\n", fileList[i].Name(), pathname+"/"+outFiles[i])
+			defer os.Remove(fileList[i].Name()) // 把改名失败的文件删除
+		} else {
+			// fmt.Printf("rename successfully! %s -> %s\n", fileList[i].Name(), pathname+"/"+outFiles[i])
+		}
+	}
 	// 通知任务完成
-	CallTaskDone(new(TaskDoneReply))
+	taskDoneArgs := TaskDoneArgs{reply.Task, outFiles}
+	taskDoneReply := TaskDoneReply{}
+	CallTaskDone(&taskDoneArgs, &taskDoneReply)
 
 }
 
 func ReduceWorker(reducef func(string, []string) string, reply *AssignTaskReply) bool {
 	// 把对应于此reduce任务的中间文件加载出来
 	intermediate := []KeyValue{}
-	for i := 0; i < reply.NMap; i++ {
-		filename := fmt.Sprintf("mr-%d-%d", i, reply.Task.Number)
+	for _, filename := range reply.Filenames {
+		// fmt.Printf("%d reduce: %s\n", reply.Task.Number, filename)
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("cannot open %v", reply.Filename)
+			log.Fatalf("cannot open %v", filename)
 		}
 		dec := json.NewDecoder(file)
 		for {
@@ -125,8 +144,9 @@ func ReduceWorker(reducef func(string, []string) string, reply *AssignTaskReply)
 	// 排序
 	sort.Sort(ByKey(intermediate))
 
+	pathname, _ := os.Getwd() // 获取当前路径（把文件输出到main路径下）
 	oname := fmt.Sprintf("mr-out-%d", reply.Task.Number)
-	ofile, err := os.Create(oname)
+	ofile, err := ioutil.TempFile(pathname, oname)
 	if err != nil {
 		log.Fatalf("cannot create %v", oname)
 	}
@@ -150,8 +170,18 @@ func ReduceWorker(reducef func(string, []string) string, reply *AssignTaskReply)
 	}
 	ofile.Close()
 
+	// 原子的改名
+	err = os.Rename(ofile.Name(), pathname+"/"+oname)
+	if err != nil {
+		fmt.Printf("rename failed! %s -> %s\n", ofile.Name(), pathname+"/"+oname)
+		defer os.Remove(ofile.Name()) // 改名失败 删除临时文件
+	} else {
+		// fmt.Printf("rename successfully! %s -> %s\n", ofile.Name(), pathname+"/"+oname)
+	}
+
+	taskDoneArgs := TaskDoneArgs{reply.Task, []string{}}
 	taskDoneReply := TaskDoneReply{}
-	CallTaskDone(&taskDoneReply)
+	CallTaskDone(&taskDoneArgs, &taskDoneReply)
 	return taskDoneReply.Over
 }
 
@@ -187,14 +217,15 @@ func CallAssignTask(reply *AssignTaskReply) bool {
 
 	ok := call("Coordinator.AssignTask", &args, reply)
 	if ok {
-		fmt.Printf("get the task : ")
+		var s string
 		if reply.Task.Type == MapType {
-			fmt.Printf("Map\n")
+			s = "Map"
 		} else if reply.Task.Type == ReduceType {
-			fmt.Printf("Reduce\n")
+			s = "Reduce"
 		} else {
-			fmt.Printf("all finished\n")
+			s = "all finished"
 		}
+		fmt.Printf("get the task : %s %d\n", s, reply.Task.Number)
 	} else {
 		fmt.Printf("call AssignTask failed！\n")
 		return false
@@ -202,9 +233,16 @@ func CallAssignTask(reply *AssignTaskReply) bool {
 	return true
 }
 
-func CallTaskDone(reply *TaskDoneReply) {
-	args := TaskDoneArgs{}
-	call("Coordinator.TaskDone", &args, reply)
+func CallTaskDone(args *TaskDoneArgs, reply *TaskDoneReply) {
+	call("Coordinator.TaskDone", args, reply)
+
+	var s string
+	if args.Task.Type == MapType {
+		s = "Map"
+	} else if args.Task.Type == ReduceType {
+		s = "Reduce"
+	}
+	fmt.Printf("TaskDone : %s %d\n", s, args.Task.Number)
 }
 
 // send an RPC request to the coordinator, wait for the response.
