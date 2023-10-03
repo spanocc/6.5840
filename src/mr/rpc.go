@@ -36,7 +36,7 @@ const (
 
 type Task struct {
 	Type   TaskType
-	Number int
+	Number int // 编号
 }
 
 type AssignTaskArgs struct {

@@ -58,7 +58,7 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 		select {
 		case task := <-c.taskQueue:
 			flag := false
-
+			// 修改任务状态
 			c.ProgressLock.Lock()
 			if task.Type == MapType {
 				if c.MapProgress[task.Number] == TaskWaiting {
@@ -72,7 +72,7 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 				}
 			}
 			c.ProgressLock.Unlock()
-
+			// 派发任务
 			if flag {
 				reply.Task.Type = task.Type
 				reply.Task.Number = task.Number
@@ -88,12 +88,13 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 					copy(reply.Filenames, c.intermediateFiles[reply.Task.Number])
 					c.rwlock.RUnlock()
 				}
-
+				// 监视任务10s
 				go MonitorTask(c, task)
 
 				return nil
 			}
 		default:
+			// 任务队列中没有任务，且job还没结束，那就在条件变量上阻塞，等通知
 			c.stateLock.Lock()
 			if c.jobState == JobDone {
 				c.stateLock.Unlock()
@@ -112,6 +113,7 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 
 	c.ProgressLock.Lock()
 	if args.Task.Type == MapType {
+		// 只有任务状态第一次变为Finished时才要执行一些操作
 		if c.MapProgress[args.Task.Number] != TaskFinished {
 			c.MapProgress[args.Task.Number] = TaskFinished
 			// 保存map产生的临时文件名
