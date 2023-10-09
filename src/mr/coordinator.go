@@ -185,7 +185,7 @@ func MonitorTask(c *Coordinator, task Task) {
 		if c.MapProgress[task.Number] == TaskRunning {
 			fmt.Printf("Map %d timeout\n", task.Number)
 			c.MapProgress[task.Number] = TaskWaiting
-			c.taskQueue <- task
+			c.taskQueue <- task     // 应当确保此时channel不会阻塞(通过在初始化时设置足够的channel容量)，以防在上锁时等待通道，发生死锁
 			c.stateCond.Broadcast() // 唤醒其他goroutine处理task
 		}
 	} else if task.Type == ReduceType {
