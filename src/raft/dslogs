@@ -106,6 +106,7 @@ def main(
             # if topic not in topics:
             #     continue
             if server not in topics:
+                print(time, topic, server, msg)
                 continue
 
             msg = " ".join(msg)

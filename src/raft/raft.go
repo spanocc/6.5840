@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 	"sort"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -130,6 +132,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -150,6 +160,19 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logs []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Decode failed in readPersist\n")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.logs = logs
+	}
 }
 
 // the service says it has created a snapshot that has
@@ -197,6 +220,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 不管给不给投票，发现更大的任期就要更新(为什么？)。所以任期相同不代表投过票了，要通过votedfor判断
 	if args.Term > rf.currentTerm {
 		rf.UpdateTerm(args.Term)
+		rf.persist()
 	}
 	// args.Term == rf.currentTerm / args.Term < rf.currentTerm(忽视)
 	if args.Term == rf.currentTerm {
@@ -208,6 +232,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.ResetElectionTime()
 			// role exchange (Leader->Follower / Candidate->Follower)
 			rf.role = Follower
+
+			rf.persist()
 
 			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "vote for -> %d\n", args.CandidateId)
 		}
@@ -277,8 +303,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.currentTerm {
 		rf.leader = args.LeaderId
 		rf.UpdateTerm(args.Term)
+		rf.persist()
 		rf.ResetElectionTime()
 		reply.Success = true
+		// 快速恢复
 		if args.PrevLogIndex > rf.getLastLogIndex() { // 本服务器在上一个日志的位置为空
 			reply.XTerm = -1
 			reply.XLen = args.PrevLogIndex - rf.getLastLogIndex()
@@ -287,7 +315,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.XTerm = rf.logs[args.PrevLogIndex].Term
 			reply.XIndex = args.PrevLogIndex
 			for i := reply.XIndex - 1; i >= 0; i-- {
-				if rf.logs[i].Term == reply.Term {
+				if rf.logs[i].Term == reply.XTerm {
 					reply.XIndex = i
 				} else {
 					break
@@ -311,6 +339,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			if i < len(args.Entries) {
 				rf.logs = append(rf.logs, args.Entries[i:]...)
 			}
+
+			rf.persist()
+
 			// 更新commitedIndex
 			if args.LeaderCommit > rf.commitIndex {
 				// index of last new entry 必须是"本任期"的最后一个新日志才行，防止把错误的日志提交
@@ -364,6 +395,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		isLeader = true
 
 		rf.logs = append(rf.logs, LogEntry{command, term, index})
+		rf.persist()
 		rf.matchIndex[rf.me] = index
 		rf.LogReplication()
 	} else {
@@ -427,6 +459,7 @@ func (rf *Raft) AppendEmptyEntries() {
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
 						rf.UpdateTerm(reply.Term)
+						rf.persist()
 					} else if reply.Term == rf.currentTerm {
 						// 心跳日志不携带日志，尽管还有没发送的日志
 						// TODO : 心跳日志也应该更新nextIndex这些
@@ -434,23 +467,7 @@ func (rf *Raft) AppendEmptyEntries() {
 							// 如果成功，心跳包什么都不需要做
 						} else if reply.Success == false {
 							// 和LogReplication一样，回退nextIndex
-							if reply.XTerm == -1 {
-								rf.nextIndex[i] -= reply.XLen
-							} else {
-								idx := args.PrevLogIndex
-								for ; idx >= 0; idx-- {
-									if rf.logs[idx].Term == reply.XTerm {
-										rf.nextIndex[i] = idx + 1
-										break
-									} else if rf.logs[idx].Term < reply.Term {
-										rf.nextIndex[i] = reply.XIndex
-										break
-									}
-								}
-								if idx < 0 {
-									DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "nextIndex back over range\n")
-								}
-							}
+							rf.BackNextIndex(i, args, reply)
 							// 空日志失败不需要重传
 							// go sendLogs(server)
 						}
@@ -499,10 +516,11 @@ func (rf *Raft) LogReplication() {
 			// RPC出错就重传
 			go sendLogs(server)
 		} else {
-			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "AppendEntries reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d}\n", server, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen)
+			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "AppendEntries args: {Term = %d, PrevLogIndex = %d, PrevLogTerm = %d} reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d}\n", args.Term, args.PrevLogIndex, args.PrevLogTerm, server, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen)
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
 				rf.UpdateTerm(reply.Term)
+				rf.persist()
 			} else if reply.Term == rf.currentTerm {
 				if reply.Success { // 日志成功添加
 					if len(args.Entries) > 0 {
@@ -516,23 +534,7 @@ func (rf *Raft) LogReplication() {
 					}
 					rf.UpdateCommitIndex()
 				} else { // 日志不匹配, 回退nextIndex
-					if reply.XTerm == -1 {
-						rf.nextIndex[server] -= reply.XLen
-					} else {
-						idx := args.PrevLogIndex
-						for ; idx >= 0; idx-- {
-							if rf.logs[idx].Term == reply.XTerm {
-								rf.nextIndex[server] = idx + 1
-								break
-							} else if rf.logs[idx].Term < reply.Term {
-								rf.nextIndex[server] = reply.XIndex
-								break
-							}
-						}
-						if idx < 0 {
-							DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "nextIndex back over range\n")
-						}
-					}
+					rf.BackNextIndex(server, args, reply)
 					go sendLogs(server)
 				}
 				DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "nextIndex[%d] = %d\n", server, rf.nextIndex[server])
@@ -549,6 +551,38 @@ func (rf *Raft) LogReplication() {
 		if i != rf.me {
 			go sendLogs(i)
 		}
+	}
+}
+
+// 日志不匹配, 回退nextIndex
+func (rf *Raft) BackNextIndex(server int, args AppendEntriesArgs, reply AppendEntriesReply) {
+	// (应该用PrevLogIndex的值回退，而不是当前的nextIndex值，因为可能在这期间，nextIndex的值更改了)
+	newNextIndex := -1
+	if reply.XTerm == -1 {
+		if reply.XLen <= 0 {
+			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "XTerm == -1 but XLen == %d\n", reply.XLen)
+		}
+		newNextIndex = args.PrevLogIndex - reply.XLen + 1
+	} else {
+		idx := args.PrevLogIndex
+		for ; idx >= 0; idx-- {
+			if rf.logs[idx].Term == reply.XTerm {
+				newNextIndex = idx + 1
+				break
+			} else if rf.logs[idx].Term < reply.Term {
+				newNextIndex = reply.XIndex
+				break
+			}
+		}
+		if idx < 0 || newNextIndex == -1 {
+			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "nextIndex back over range\n")
+		}
+	}
+
+	// 如果返回false，才会进入此函数，所以要保证nextIndex一定是回退而不是增加（因为过去延迟的rpc可能导致nextIndex增加，造成死循环）
+	// 且如果之前添加日志成功导致nextIndex和matchIndex增加，也要保证不会因为延迟的rpc回复而造成nextIndex的回退
+	if newNextIndex < rf.nextIndex[server] && newNextIndex > rf.matchIndex[server] {
+		rf.nextIndex[server] = newNextIndex
 	}
 }
 
@@ -626,6 +660,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
 				rf.UpdateTerm(reply.Term)
+				rf.persist()
 			} else if reply.Term == rf.currentTerm && reply.VoteGranted {
 				rf.votedNum = rf.votedNum + 1
 				if rf.votedNum > len(rf.peers)/2 && rf.role != Leader {
@@ -671,6 +706,9 @@ func (rf *Raft) ticker() {
 			rf.votedFor = rf.me
 			rf.votedNum = 1
 			rf.ResetElectionTime()
+
+			rf.persist()
+
 			args.Term = rf.currentTerm
 			args.CandidateId = rf.me
 			args.LastLogIndex = rf.getLastLogIndex()
@@ -745,10 +783,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.cond = sync.NewCond(&rf.mu)
 
-	rf.ResetElectionTime()
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	rf.ResetElectionTime()
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
