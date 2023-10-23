@@ -100,6 +100,10 @@ type Raft struct {
 
 	applyCh chan ApplyMsg
 	cond    *sync.Cond
+
+	snapshot      []byte
+	snapshotTerm  int
+	snapshotIndex int // 快照的部分是一定被apply的，也就是 commitIndex >= lastApplied >= snapshotIndex
 }
 
 // return currentTerm and whether this server
@@ -138,8 +142,11 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logs)
+	// 快照的元数据和快照一起存储
+	e.Encode(rf.snapshotIndex)
+	e.Encode(rf.snapshotTerm)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	rf.persister.Save(raftstate, rf.snapshot)
 }
 
 // restore previously persisted state.
@@ -166,12 +173,19 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var logs []LogEntry
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil {
+	var snapshotIndex int
+	var snapshotTerm int
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil || d.Decode(&snapshotIndex) != nil || d.Decode(&snapshotTerm) != nil {
 		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Decode failed in readPersist\n")
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.logs = logs
+		rf.snapshotIndex = snapshotIndex
+		rf.snapshotTerm = snapshotTerm
+
+		rf.lastApplied = rf.snapshotIndex
+		rf.commitIndex = rf.snapshotIndex
 	}
 }
 
@@ -209,7 +223,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 需要上锁后才能调用
 	later := func(args *RequestVoteArgs) bool {
 		lastIndex := rf.getLastLogIndex()
-		lastTerm := rf.logs[lastIndex].Term
+		lastTerm := rf.getLastLogTerm()
 		return (args.LastLogTerm > lastTerm) ||
 			(args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIndex)
 	}
@@ -311,53 +325,62 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.XTerm = -1
 			reply.XLen = args.PrevLogIndex - rf.getLastLogIndex()
 			reply.Success = false
-		} else if args.PrevLogTerm != rf.logs[args.PrevLogIndex].Term { // 上一个日志的任期不匹配
-			reply.XTerm = rf.logs[args.PrevLogIndex].Term
-			reply.XIndex = args.PrevLogIndex
-			for i := reply.XIndex - 1; i >= 0; i-- {
-				if rf.logs[i].Term == reply.XTerm {
-					reply.XIndex = i
-				} else {
-					break
-				}
-			}
+		} else if args.PrevLogIndex < rf.snapshotIndex || (args.PrevLogIndex == rf.snapshotIndex && args.PrevLogTerm != rf.snapshotTerm) {
+			// TODO: 通知leader发送快照了
+			panic("should not reach here")
+			reply.XTerm = 0
+			reply.XIndex = 0
 			reply.Success = false
-		} else { // 附加日志
-			i := 0
-			// 发现term不匹配，就把后面都删掉
-			for ; i < len(args.Entries) && args.PrevLogIndex+1+i <= rf.getLastLogIndex(); i++ {
-				if rf.logs[args.PrevLogIndex+1+i].Term != args.Entries[i].Term {
-					// 不应该删除已提交的日志
-					if args.PrevLogIndex+1+i <= rf.commitIndex {
-						DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Delete logs commited - Leader:%d\n", args.LeaderId)
-					}
-					rf.logs = rf.logs[:args.PrevLogIndex+1+i]
-					break
-				}
-			}
-			// 把剩余部分添加进来
-			if i < len(args.Entries) {
-				rf.logs = append(rf.logs, args.Entries[i:]...)
-			}
-
-			rf.persist()
-
-			// 更新commitedIndex
-			if args.LeaderCommit > rf.commitIndex {
-				// index of last new entry 必须是"本任期"的最后一个新日志才行，防止把错误的日志提交
-				lastNewEntry := rf.commitIndex
-				for i := rf.commitIndex; i <= rf.getLastLogIndex(); i++ {
-					if rf.logs[i].Term == rf.currentTerm {
-						lastNewEntry = rf.logs[i].Index
+		} else if args.PrevLogIndex >= rf.snapshotIndex {
+			if args.PrevLogIndex > rf.snapshotIndex && args.PrevLogTerm != rf.logs[rf.IndexInSlice(args.PrevLogIndex)].Term { // 上一个日志的任期不匹配
+				reply.XTerm = rf.logs[rf.IndexInSlice(args.PrevLogIndex)].Term
+				reply.XIndex = args.PrevLogIndex
+				for i := rf.IndexInSlice(reply.XIndex) - 1; i >= 0; i-- {
+					if rf.logs[i].Term == reply.XTerm {
+						reply.XIndex = rf.logs[i].Index
+					} else {
+						break
 					}
 				}
-				newCommitIndex := min(lastNewEntry, args.LeaderCommit)
-				// 提交点不应该回退
-				if newCommitIndex < rf.commitIndex {
-					DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "CommitIndex Back\n")
+				reply.Success = false
+			} else { // 附加日志
+				i := 0
+				// 发现term不匹配，就把后面都删掉
+				for ; i < len(args.Entries) && args.PrevLogIndex+1+i <= rf.getLastLogIndex(); i++ {
+					if rf.logs[rf.IndexInSlice(args.PrevLogIndex+1+i)].Term != args.Entries[i].Term {
+						// 不应该删除已提交的日志
+						if args.PrevLogIndex+1+i <= rf.commitIndex {
+							DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Delete logs commited - Leader:%d\n", args.LeaderId)
+						}
+						rf.logs = rf.logs[:rf.IndexInSlice(args.PrevLogIndex+1+i)]
+						break
+					}
 				}
-				rf.commitIndex = newCommitIndex
-				rf.cond.Broadcast()
+				// 把剩余部分添加进来
+				if i < len(args.Entries) {
+					rf.logs = append(rf.logs, args.Entries[i:]...)
+				}
+
+				rf.persist()
+
+				// 更新commitedIndex
+				if args.LeaderCommit > rf.commitIndex {
+					// index of last new entry 必须是"本任期"的最后一个新日志才行，防止把错误的日志提交
+					lastNewEntry := rf.commitIndex
+					// commitIndex >= snapshotIndex
+					for i := rf.commitIndex + 1; i <= rf.getLastLogIndex(); i++ {
+						if rf.logs[rf.IndexInSlice(i)].Term == rf.currentTerm {
+							lastNewEntry = i
+						}
+					}
+					newCommitIndex := min(lastNewEntry, args.LeaderCommit)
+					// 提交点不应该回退
+					if newCommitIndex < rf.commitIndex {
+						DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "CommitIndex Back\n")
+					}
+					rf.commitIndex = newCommitIndex
+					rf.cond.Broadcast()
+				}
 			}
 		}
 	}
@@ -444,7 +467,16 @@ func (rf *Raft) AppendEmptyEntries() {
 			args.Term = rf.currentTerm
 			args.LeaderId = rf.me
 			args.PrevLogIndex = rf.nextIndex[i] - 1
-			args.PrevLogTerm = rf.logs[args.PrevLogIndex].Term
+
+			if args.PrevLogIndex > rf.snapshotIndex {
+				args.PrevLogTerm = rf.logs[rf.IndexInSlice(args.PrevLogIndex)].Term
+			} else if args.PrevLogIndex == rf.snapshotIndex {
+				args.PrevLogTerm = rf.snapshotTerm
+			} else {
+				args.PrevLogIndex = rf.snapshotIndex
+				args.PrevLogTerm = rf.snapshotTerm
+			}
+
 			args.Entries = nil
 			args.LeaderCommit = rf.commitIndex
 			// rf.mu.Unlock()
@@ -499,11 +531,27 @@ func (rf *Raft) LogReplication() {
 		args.Term = rf.currentTerm
 		args.LeaderId = rf.me
 		args.PrevLogIndex = rf.nextIndex[server] - 1
-		args.PrevLogTerm = rf.logs[args.PrevLogIndex].Term
+		if args.PrevLogIndex > rf.snapshotIndex {
+			args.PrevLogTerm = rf.logs[rf.IndexInSlice(args.PrevLogIndex)].Term
+		} else if args.PrevLogIndex == rf.snapshotIndex {
+			args.PrevLogTerm = rf.snapshotTerm
+		} else {
+			// TODO: 发送installsnapshot
+			rf.SnapshotReplication(server)
+			rf.nextIndex[server] = rf.snapshotIndex + 1
+			args.PrevLogIndex = rf.snapshotIndex
+			args.PrevLogTerm = rf.snapshotTerm
+		}
+
+		if rf.nextIndex[server] <= rf.snapshotIndex {
+			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "index out of range: {rf.nextIndex[%d} = %d, rf.snapshotIndex = %d\n", server, rf.nextIndex[server], rf.snapshotIndex)
+		}
+
 		// 无论entries是否为空都要发送，因为nextIndex的值不一定精准，所以要一步步迭代
 		args.Entries = nil
 		if rf.nextIndex[server] <= rf.getLastLogIndex() {
-			s := rf.logs[rf.nextIndex[server]:]
+			// 要深拷贝，因为不是立马发送数据
+			s := rf.logs[rf.IndexInSlice(rf.nextIndex[server]):]
 			args.Entries = make([]LogEntry, len(s))
 			copy(args.Entries, s)
 		}
@@ -563,11 +611,11 @@ func (rf *Raft) BackNextIndex(server int, args AppendEntriesArgs, reply AppendEn
 			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "XTerm == -1 but XLen == %d\n", reply.XLen)
 		}
 		newNextIndex = args.PrevLogIndex - reply.XLen + 1
-	} else {
-		idx := args.PrevLogIndex
+	} else if args.PrevLogIndex > rf.snapshotIndex {
+		idx := rf.IndexInSlice(args.PrevLogIndex)
 		for ; idx >= 0; idx-- {
 			if rf.logs[idx].Term == reply.XTerm {
-				newNextIndex = idx + 1
+				newNextIndex = rf.logs[idx+1].Index
 				break
 			} else if rf.logs[idx].Term < reply.Term {
 				newNextIndex = reply.XIndex
@@ -575,7 +623,8 @@ func (rf *Raft) BackNextIndex(server int, args AppendEntriesArgs, reply AppendEn
 			}
 		}
 		if idx < 0 || newNextIndex == -1 {
-			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "nextIndex back over range\n")
+			// DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "nextIndex back over range\n")
+			newNextIndex = rf.snapshotIndex
 		}
 	}
 
@@ -610,11 +659,17 @@ func (rf *Raft) ApplyLogs() {
 			}
 		}
 		for ; rf.lastApplied < rf.commitIndex; rf.lastApplied++ {
-			log := rf.logs[rf.lastApplied+1]
+
+			if rf.lastApplied+1 <= rf.snapshotIndex {
+				DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "repeated apply {apply = %d, snapshotIndex = %d}\n", rf.lastApplied+1, rf.snapshotIndex)
+			}
+
+			log := rf.logs[rf.IndexInSlice(rf.lastApplied+1)]
 			msg := ApplyMsg{}
 			msg.CommandValid = true
 			msg.CommandIndex = log.Index
 			msg.Command = log.Command
+			msg.SnapshotValid = false
 			rf.applyCh <- msg
 			if log.Index != rf.lastApplied+1 {
 				DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Index not match : logs[%v].Index = %d\n", rf.lastApplied+1, log.Index)
@@ -640,9 +695,35 @@ func (rf *Raft) UpdateTerm(term int) {
 
 func (rf *Raft) getLastLogIndex() int {
 	if len(rf.logs) < 1 {
-		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "The lenght of logs is less than 1")
+		// DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "The lenght of logs is less than 1")
+		return rf.snapshotIndex
 	}
+
+	if rf.IndexInSlice(rf.logs[len(rf.logs)-1].Index) != len(rf.logs)-1 {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "index transform error\n")
+	}
+
 	return rf.logs[len(rf.logs)-1].Index
+}
+
+func (rf *Raft) getLastLogTerm() int {
+	if len(rf.logs) < 1 {
+		return rf.snapshotTerm
+	}
+
+	if rf.logs[len(rf.logs)-1].Term != rf.logs[rf.IndexInSlice(rf.getLastLogIndex())].Term {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "index transform error\n")
+	}
+
+	return rf.logs[len(rf.logs)-1].Term
+}
+
+func (rf *Raft) IndexInSlice(logIndex int) int {
+	sliceIndex := logIndex - (rf.snapshotIndex + 1)
+	if sliceIndex < 0 {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "sliceIndex out of range : {logIndex = %d, snapshotIndex = %d, sliceIndex = %d}\n", logIndex, rf.snapshotIndex, sliceIndex)
+	}
+	return sliceIndex
 }
 
 func (rf *Raft) ticker() {
@@ -712,7 +793,7 @@ func (rf *Raft) ticker() {
 			args.Term = rf.currentTerm
 			args.CandidateId = rf.me
 			args.LastLogIndex = rf.getLastLogIndex()
-			args.LastLogTerm = rf.logs[args.LastLogIndex].Term
+			args.LastLogTerm = rf.getLastLogTerm()
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
 					// 对每个rpc单开一个goroutine，防止一个rpc调用时间过长而阻塞其他,且保证上锁时交给其他goroutine调用rpc
@@ -745,6 +826,36 @@ func (rf *Raft) HeartBeats() {
 	}
 }
 
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
+func (rf *Raft) InstallSnapshot(args *RequestVoteArgs, reply *RequestVoteReply) {
+
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
+// 调用时上锁
+func (rf *Raft) SnapshotReplication(server int) {
+	args := InstallSnapshotArgs{}
+
+	go func(args InstallSnapshotArgs) {
+
+	}(args)
+}
+
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -772,7 +883,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, n)
 	// rf.logs[0] = LogEntry{Term:0, Index:0}, 在头部加一个哨兵结点
 	// raft的索引是从1开始的，所以哨兵结点的索引为0
-	rf.logs = append(rf.logs, LogEntry{nil, 0, 0})
+	// rf.logs = append(rf.logs, LogEntry{nil, 0, 0})
 	for i := 0; i < n; i++ {
 		rf.nextIndex[i] = 1
 		rf.matchIndex[i] = 0
@@ -782,6 +893,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyCh = applyCh
 	rf.cond = sync.NewCond(&rf.mu)
+
+	rf.snapshotIndex = 0
+	rf.snapshotTerm = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
