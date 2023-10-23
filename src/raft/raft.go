@@ -103,7 +103,7 @@ type Raft struct {
 
 	snapshot      []byte
 	snapshotTerm  int
-	snapshotIndex int // 快照的部分是一定被apply的，也就是 commitIndex >= lastApplied >= snapshotIndex
+	snapshotIndex int // 快照的部分是一定被apply的，也就是 commitIndex >= lastApplied >= snapshotIndex. 同理:Take care that these snapshots only advance the service's state, and don't cause it to move backwards. 快照不会向后回退状态，因为已经提交的数据不会回退
 }
 
 // return currentTerm and whether this server
@@ -195,7 +195,28 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	rf.mu.Lock()
 
+	if index < rf.snapshotIndex {
+		// DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot back out of range\n")
+		// 对于follower来说，可能收到服务层对更小的索引进行快照的请求，忽视它
+	} else if index > rf.getLastLogIndex() {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot index out of range\n")
+	} else if index > rf.snapshotIndex {
+		term := rf.logs[rf.IndexInSlice(index)].Term
+		var tmp []LogEntry
+		tmp = append(tmp, rf.logs[rf.IndexInSlice(index+1):]...)
+		rf.snapshotIndex = index
+		rf.snapshotTerm = term
+		rf.logs = tmp
+		rf.snapshot = snapshot
+		// commitIndex >= lastApplied >= snapshotIndex
+		rf.lastApplied = max(rf.lastApplied, index)
+		rf.commitIndex = max(rf.commitIndex, rf.lastApplied)
+		rf.persist()
+	}
+
+	rf.mu.Unlock()
 }
 
 // example RequestVote RPC arguments structure.
@@ -311,7 +332,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	// 包括：
 	// 同term的其他candidate(==)
-	// 给同term其他candidate的follower(==)
+	// 给同term其他candidate投票的follower(==)
 	// 给本term的leader投票的follwer(==)
 	// 一些term落后的其他节点(>)
 	if args.Term >= rf.currentTerm {
@@ -326,8 +347,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.XLen = args.PrevLogIndex - rf.getLastLogIndex()
 			reply.Success = false
 		} else if args.PrevLogIndex < rf.snapshotIndex || (args.PrevLogIndex == rf.snapshotIndex && args.PrevLogTerm != rf.snapshotTerm) {
-			// TODO: 通知leader发送快照了
-			panic("should not reach here")
+			// 快照都是已经apply的了，所以不应该回退
+			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot back out of range\n")
 			reply.XTerm = 0
 			reply.XIndex = 0
 			reply.Success = false
@@ -486,7 +507,7 @@ func (rf *Raft) AppendEmptyEntries() {
 				ok := rf.sendAppendEntries(i, &args, &reply)
 				if !ok {
 					// 空日志失败不需要重传
-					DPrintf(Leader, args.LeaderId, rf.currentTerm, DEBUG, "AppendEmptyEntries to %2d failed\n", i)
+					DPrintf(Leader, args.LeaderId, args.Term, DEBUG, "AppendEmptyEntries to %2d failed\n", i)
 				} else {
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
@@ -670,6 +691,8 @@ func (rf *Raft) ApplyLogs() {
 			msg.CommandIndex = log.Index
 			msg.Command = log.Command
 			msg.SnapshotValid = false
+			// TODO: 通道可能阻塞，此时上锁会导致其他goroutine无法工作
+			// 设置成非阻塞管道，然后条件变量每一段时间唤醒
 			rf.applyCh <- msg
 			if log.Index != rf.lastApplied+1 {
 				DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Index not match : logs[%v].Index = %d\n", rf.lastApplied+1, log.Index)
@@ -734,7 +757,7 @@ func (rf *Raft) ticker() {
 		ok := rf.sendRequestVote(i, &args, &reply)
 		if !ok {
 			// 调用失败需不需要重传？
-			DPrintf(Candidate, args.CandidateId, rf.currentTerm, DEBUG, "sendRequestVote to %2d failed\n", i)
+			DPrintf(Candidate, args.CandidateId, args.Term, DEBUG, "sendRequestVote to %2d failed\n", i)
 			go sendVote(i, args) // 重传的参数和之前的完全一致
 		} else {
 			// 可以上锁并使用rf的值，因为想用的是当前值
@@ -838,8 +861,34 @@ type InstallSnapshotReply struct {
 	Term int
 }
 
-func (rf *Raft) InstallSnapshot(args *RequestVoteArgs, reply *RequestVoteReply) {
-
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	if args.Term >= rf.currentTerm {
+		rf.leader = args.LeaderId
+		rf.UpdateTerm(args.Term)
+		rf.persist()
+		rf.ResetElectionTime()
+		if args.LastIncludedIndex > rf.snapshotIndex {
+			if args.LastIncludedIndex >= rf.getLastLogIndex() {
+				rf.logs = make([]LogEntry, 0)
+			} else {
+				var tmp []LogEntry
+				tmp = append(tmp, rf.logs[rf.IndexInSlice(args.LastIncludedIndex+1):]...)
+				rf.logs = tmp
+			}
+			rf.snapshotIndex = args.LastIncludedIndex
+			rf.snapshotTerm = args.LastIncludedTerm
+			rf.snapshot = args.Data
+			// commitIndex >= lastApplied >= snapshotIndex
+			rf.lastApplied = max(rf.lastApplied, args.LastIncludedIndex)
+			rf.commitIndex = max(rf.commitIndex, rf.lastApplied)
+			rf.persist()
+		} else if args.LastIncludedIndex == rf.snapshotIndex && args.LastIncludedTerm != rf.snapshotTerm {
+			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot not match\n")
+		}
+	}
+	reply.Term = rf.currentTerm
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -850,9 +899,23 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // 调用时上锁
 func (rf *Raft) SnapshotReplication(server int) {
 	args := InstallSnapshotArgs{}
-
+	args.Term = rf.currentTerm
+	args.LeaderId = rf.me
+	args.LastIncludedIndex = rf.snapshotIndex
+	args.LastIncludedTerm = rf.currentTerm
+	args.Data = rf.snapshot
 	go func(args InstallSnapshotArgs) {
-
+		reply := InstallSnapshotReply{}
+		if ok := rf.sendInstallSnapshot(server, &args, &reply); ok {
+			DPrintf(Leader, args.LeaderId, args.Term, DEBUG, "InstallSnapshot to %2d failed\n", server)
+		} else {
+			rf.mu.Lock()
+			if reply.Term > rf.currentTerm {
+				rf.UpdateTerm(reply.Term)
+				rf.persist()
+			}
+			rf.mu.Unlock()
+		}
 	}(args)
 }
 
