@@ -43,7 +43,7 @@ func Role2String(rr RaftRole) string {
 
 func currentLogLevel() LogLevel {
 	v := os.Getenv("LOGLEVEL")
-	level := DEBUG
+	level := INFO
 	if v != "" {
 		if v == "DEBUG" {
 			level = DEBUG

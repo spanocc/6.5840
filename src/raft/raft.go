@@ -103,7 +103,7 @@ type Raft struct {
 
 	snapshot      []byte
 	snapshotTerm  int
-	snapshotIndex int // 快照的部分是一定被apply的，也就是 commitIndex >= lastApplied >= snapshotIndex. 同理:Take care that these snapshots only advance the service's state, and don't cause it to move backwards. 快照不会向后回退状态，因为已经提交的数据不会回退
+	snapshotIndex int // 快照的部分是一定被apply的，也就是 commitIndex >= snapshotIndex.(注：lastApplied不一定>=snapshotIndex,因为对于follower来说，收到了leader的快照，可能还没来得及发送给上层去应用) 同理:Take care that these snapshots only advance the service's state, and don't cause it to move backwards. 快照不会向后回退状态，因为已经提交的数据不会回退
 }
 
 // return currentTerm and whether this server
@@ -184,7 +184,10 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.snapshotIndex = snapshotIndex
 		rf.snapshotTerm = snapshotTerm
 
-		rf.lastApplied = rf.snapshotIndex
+		rf.snapshot = rf.persister.ReadSnapshot()
+
+		// rf.lastApplied = rf.snapshotIndex
+		// commitIndex >= snapshotIndex
 		rf.commitIndex = rf.snapshotIndex
 	}
 }
@@ -196,6 +199,13 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
+
+	DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "receive snapshot: {snapshot = %v, index = %v, term = %v}\n", rf.snapshot, rf.snapshotIndex, rf.snapshotTerm)
+
+	// server层进行快照，那一定是已经applied的了
+	if index < rf.lastApplied {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot but not applied\n")
+	}
 
 	if index < rf.snapshotIndex {
 		// DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot back out of range\n")
@@ -211,8 +221,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		rf.logs = tmp
 		rf.snapshot = snapshot
 		// commitIndex >= lastApplied >= snapshotIndex
-		rf.lastApplied = max(rf.lastApplied, index)
-		rf.commitIndex = max(rf.commitIndex, rf.lastApplied)
+		// index < lastApplied 必须已经保证了，所以不需要以下两条
+		// rf.lastApplied = max(rf.lastApplied, index)
+		// rf.commitIndex = max(rf.commitIndex, rf.lastApplied)
 		rf.persist()
 	}
 
@@ -341,19 +352,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
 		rf.ResetElectionTime()
 		reply.Success = true
+
+		if args.PrevLogIndex < rf.snapshotIndex {
+			// 把在snapshotIndex前面的那部分日志去掉(这部分日志一定是相同的，因为是已经commit并apply的了)，后面的日志正常添加
+			if args.PrevLogIndex+len(args.Entries) >= rf.snapshotIndex {
+				index := args.Entries[rf.snapshotIndex-args.PrevLogIndex-1].Index
+				term := args.Entries[rf.snapshotIndex-args.PrevLogIndex-1].Term
+				args.Entries = args.Entries[rf.snapshotIndex-args.PrevLogIndex:]
+				args.PrevLogIndex = index
+				args.PrevLogTerm = term
+			}
+		}
+
 		// 快速恢复
 		if args.PrevLogIndex > rf.getLastLogIndex() { // 本服务器在上一个日志的位置为空
 			reply.XTerm = -1
 			reply.XLen = args.PrevLogIndex - rf.getLastLogIndex()
 			reply.Success = false
-		} else if args.PrevLogIndex < rf.snapshotIndex || (args.PrevLogIndex == rf.snapshotIndex && args.PrevLogTerm != rf.snapshotTerm) {
-			// 快照都是已经apply的了，所以不应该回退
-			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot back out of range\n")
-			reply.XTerm = 0
-			reply.XIndex = 0
-			reply.Success = false
+		} else if args.PrevLogIndex == rf.snapshotIndex && args.PrevLogTerm != rf.snapshotTerm {
+			// 快照是以提交并应用的，所以一定不能冲突
+			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot not match: {index = %v, original term = %v, present term = %v}\n", rf.snapshotTerm, args.PrevLogTerm)
 		} else if args.PrevLogIndex >= rf.snapshotIndex {
 			if args.PrevLogIndex > rf.snapshotIndex && args.PrevLogTerm != rf.logs[rf.IndexInSlice(args.PrevLogIndex)].Term { // 上一个日志的任期不匹配
+				if args.PrevLogIndex <= rf.commitIndex {
+					DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "logs not matched but commited - Leader:%d\n", args.LeaderId)
+				}
 				reply.XTerm = rf.logs[rf.IndexInSlice(args.PrevLogIndex)].Term
 				reply.XIndex = args.PrevLogIndex
 				for i := rf.IndexInSlice(reply.XIndex) - 1; i >= 0; i-- {
@@ -513,7 +536,7 @@ func (rf *Raft) AppendEmptyEntries() {
 					if reply.Term > rf.currentTerm {
 						rf.UpdateTerm(reply.Term)
 						rf.persist()
-					} else if reply.Term == rf.currentTerm {
+					} else if reply.Term == rf.currentTerm && rf.role == Leader {
 						// 心跳日志不携带日志，尽管还有没发送的日志
 						// TODO : 心跳日志也应该更新nextIndex这些
 						if reply.Success == true {
@@ -559,6 +582,7 @@ func (rf *Raft) LogReplication() {
 		} else {
 			// TODO: 发送installsnapshot
 			rf.SnapshotReplication(server)
+			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "send snapshot\n")
 			rf.nextIndex[server] = rf.snapshotIndex + 1
 			args.PrevLogIndex = rf.snapshotIndex
 			args.PrevLogTerm = rf.snapshotTerm
@@ -585,12 +609,12 @@ func (rf *Raft) LogReplication() {
 			// RPC出错就重传
 			go sendLogs(server)
 		} else {
-			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "AppendEntries args: {Term = %d, PrevLogIndex = %d, PrevLogTerm = %d} reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d}\n", args.Term, args.PrevLogIndex, args.PrevLogTerm, server, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen)
+			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "AppendEntries args: {Term = %d, PrevLogIndex = %d, PrevLogTerm = %d} reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d} current snapshot: {snapshotIndex = %v, snapshotTerm = %v}\n", args.Term, args.PrevLogIndex, args.PrevLogTerm, server, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen, rf.snapshotIndex, rf.snapshotTerm)
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
 				rf.UpdateTerm(reply.Term)
 				rf.persist()
-			} else if reply.Term == rf.currentTerm {
+			} else if reply.Term == rf.currentTerm && rf.role == Leader { // 可能follower收到了之前的延迟rpc回复，且此端的term和对端的term都是最新term，就检测不出来了
 				if reply.Success { // 日志成功添加
 					if len(args.Entries) > 0 {
 						newIndex := args.Entries[len(args.Entries)-1].Index
@@ -647,6 +671,8 @@ func (rf *Raft) BackNextIndex(server int, args AppendEntriesArgs, reply AppendEn
 			// DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "nextIndex back over range\n")
 			newNextIndex = rf.snapshotIndex
 		}
+	} else if args.PrevLogIndex == rf.snapshotIndex {
+		newNextIndex = rf.snapshotIndex
 	}
 
 	// 如果返回false，才会进入此函数，所以要保证nextIndex一定是回退而不是增加（因为过去延迟的rpc可能导致nextIndex增加，造成死循环）
@@ -679,25 +705,43 @@ func (rf *Raft) ApplyLogs() {
 				return
 			}
 		}
-		for ; rf.lastApplied < rf.commitIndex; rf.lastApplied++ {
+		for rf.lastApplied < rf.commitIndex && rf.killed() == false { // 防止在kill的时候该goroutine正在此循环sleep中，而不能正常退出
+			msg := ApplyMsg{}
 
 			if rf.lastApplied+1 <= rf.snapshotIndex {
-				DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "repeated apply {apply = %d, snapshotIndex = %d}\n", rf.lastApplied+1, rf.snapshotIndex)
+				// DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "repeated apply {apply = %d, snapshotIndex = %d}\n", rf.lastApplied+1, rf.snapshotIndex)
+				// 给上层传递快照
+				msg.CommandValid = false
+				msg.SnapshotValid = true
+				msg.SnapshotIndex = rf.snapshotIndex
+				msg.SnapshotTerm = rf.snapshotTerm
+				// 深拷贝, 因为不是在上锁时发送数据
+				msg.Snapshot = make([]byte, len(rf.snapshot))
+				copy(msg.Snapshot, rf.snapshot)
+			} else {
+				log := rf.logs[rf.IndexInSlice(rf.lastApplied+1)]
+				msg.CommandValid = true
+				msg.CommandIndex = log.Index
+				msg.Command = log.Command
+				msg.SnapshotValid = false
 			}
 
-			log := rf.logs[rf.IndexInSlice(rf.lastApplied+1)]
-			msg := ApplyMsg{}
-			msg.CommandValid = true
-			msg.CommandIndex = log.Index
-			msg.Command = log.Command
-			msg.SnapshotValid = false
-			// TODO: 通道可能阻塞，此时上锁会导致其他goroutine无法工作
-			// 设置成非阻塞管道，然后条件变量每一段时间唤醒
-			rf.applyCh <- msg
-			if log.Index != rf.lastApplied+1 {
-				DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "Index not match : logs[%v].Index = %d\n", rf.lastApplied+1, log.Index)
+			// 设置成非阻塞管道, 防止上锁时通道阻塞造成死锁，如果通道满了，就等一段时间
+			select {
+			case rf.applyCh <- msg:
+				if msg.CommandValid {
+					rf.lastApplied++
+					DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit log[%v]: {Command = %v}\n", msg.CommandIndex, msg.Command)
+				} else {
+					rf.lastApplied = msg.SnapshotIndex
+					DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit snapshot: {snapshot = %v, index = %v, term = %v}\n", msg.Snapshot, msg.SnapshotIndex, msg.SnapshotTerm)
+				}
+			default:
+				// 等待时必须解锁，上锁时睡眠就没意义了
+				rf.mu.Unlock()
+				time.Sleep(time.Millisecond * 50)
+				rf.mu.Lock()
 			}
-			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit log[%v]: {Command = %v}\n", log.Index, log.Command)
 		}
 		rf.mu.Unlock()
 	}
@@ -706,13 +750,16 @@ func (rf *Raft) ApplyLogs() {
 // 调用时需要上锁
 // if args.term / reply.term > rf.currentTerm
 func (rf *Raft) UpdateTerm(term int) {
+	// 同一个任期内只能投票给一个人
+	if term > rf.currentTerm {
+		rf.votedFor = -1
+	}
 	rf.currentTerm = term
 	// 从Leader或Candidate变成leader要开启定时器
 	if rf.role != Follower {
 		rf.role = Follower
 		rf.ResetElectionTime()
 	}
-	rf.votedFor = -1
 	rf.votedNum = 0
 }
 
@@ -784,7 +831,7 @@ func (rf *Raft) ticker() {
 					// 不过测试代码的索引是从1开始，如果添加此功能会导致多一条日志，通不过测试。。。
 					// rf.logs = append(rf.logs, LogEntry{nil, rf.currentTerm, rf.getLastLogIndex() + 1})
 					// rf.LogReplication()
-					DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "become leader - logs:%v\n", rf.logs)
+					DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "become leader - snapshot:{snapshot = %v, index = %v, term = %v} - logs:%v\n", rf.snapshot, rf.snapshotIndex, rf.snapshotTerm, rf.logs)
 				}
 			} else {
 				// 这两种情况不需要管
@@ -879,10 +926,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.snapshotIndex = args.LastIncludedIndex
 			rf.snapshotTerm = args.LastIncludedTerm
 			rf.snapshot = args.Data
-			// commitIndex >= lastApplied >= snapshotIndex
-			rf.lastApplied = max(rf.lastApplied, args.LastIncludedIndex)
-			rf.commitIndex = max(rf.commitIndex, rf.lastApplied)
+			// rf.lastApplied = max(rf.lastApplied, args.LastIncludedIndex) 不能更新lastApplied, 通过判断lastApplied < snapshotIndex 来向上层发送快照
+			// commitIndex >= napshotIndex
+			rf.commitIndex = max(rf.commitIndex, args.LastIncludedIndex)
 			rf.persist()
+			// 更新commitIndex，通知发送快照给上层
+			rf.cond.Broadcast()
 		} else if args.LastIncludedIndex == rf.snapshotIndex && args.LastIncludedTerm != rf.snapshotTerm {
 			DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot not match\n")
 		}
@@ -902,8 +951,11 @@ func (rf *Raft) SnapshotReplication(server int) {
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
 	args.LastIncludedIndex = rf.snapshotIndex
-	args.LastIncludedTerm = rf.currentTerm
-	args.Data = rf.snapshot
+	args.LastIncludedTerm = rf.snapshotTerm
+	// args.Data = rf.snapshot
+	// 要深拷贝，因为不是立刻发送数据
+	args.Data = make([]byte, len(rf.snapshot))
+	copy(args.Data, rf.snapshot)
 	go func(args InstallSnapshotArgs) {
 		reply := InstallSnapshotReply{}
 		if ok := rf.sendInstallSnapshot(server, &args, &reply); ok {
@@ -927,7 +979,7 @@ func (rf *Raft) SnapshotReplication(server int) {
 // recent saved state, if any. applyCh is a channel on which the
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
-// for any long-running work.
+// for any long-`````````````````````````````````````````````````````````running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -944,7 +996,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	n := len(rf.peers)
 	rf.nextIndex = make([]int, n)
 	rf.matchIndex = make([]int, n)
-	// rf.logs[0] = LogEntry{Term:0, Index:0}, 在头部加一个哨兵结点
+	// rf.logs[0] = LogEntry{Term:0, Index:0}, 在头部加一个哨兵结点 (在2D中由于有了snapshotIndex的存在，不需要这个哨兵节点了)
 	// raft的索引是从1开始的，所以哨兵结点的索引为0
 	// rf.logs = append(rf.logs, LogEntry{nil, 0, 0})
 	for i := 0; i < n; i++ {
