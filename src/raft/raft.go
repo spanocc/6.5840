@@ -468,8 +468,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	} else {
 		isLeader = false
 	}
-	rf.mu.Unlock()
 	DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Start {Command = %v, index = %v, term = %v, isLeader = %v}\n", command, index, term, isLeader)
+	rf.mu.Unlock()
 	return index, term, isLeader
 }
 
@@ -609,8 +609,8 @@ func (rf *Raft) LogReplication() {
 			// RPC出错就重传
 			go sendLogs(server)
 		} else {
-			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "AppendEntries args: {Term = %d, PrevLogIndex = %d, PrevLogTerm = %d} reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d} current snapshot: {snapshotIndex = %v, snapshotTerm = %v}\n", args.Term, args.PrevLogIndex, args.PrevLogTerm, server, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen, rf.snapshotIndex, rf.snapshotTerm)
 			rf.mu.Lock()
+			DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "AppendEntries args: {Term = %d, PrevLogIndex = %d, PrevLogTerm = %d} reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d} current snapshot: {snapshotIndex = %v, snapshotTerm = %v}\n", args.Term, args.PrevLogIndex, args.PrevLogTerm, server, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen, rf.snapshotIndex, rf.snapshotTerm)
 			if reply.Term > rf.currentTerm {
 				rf.UpdateTerm(reply.Term)
 				rf.persist()

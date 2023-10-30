@@ -1,12 +1,13 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
 const Debug = false
@@ -18,11 +19,20 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Operation string
+	Key       string
+	Value     string
+	ClerkID   int64
+	seq       int64
+}
+
+type DuplicateTableEntry struct {
+	seq   int64
+	value string
 }
 
 type KVServer struct {
@@ -35,15 +45,26 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-}
 
+	subject map[string]string
+
+	// clerkID -> {seq, value}
+	duplicateTable map[int64]DuplicateTableEntry
+	// 接收到raft指令 唤醒Get和PutAppend RPC
+	cond *sync.Cond
+	// index -> {clerkID, seq}
+	// clerkID -> 等待结果 ?????
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{"Get", args.Key, "", args.ClerkID, args.seq}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{args.Op, args.Key, args.Value, args.ClerkID, args.seq}
+
 }
 
 // the tester calls Kill() when a KVServer instance won't
