@@ -108,6 +108,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if args.seq == kv.duplicateTable[args.ClerkID].seq {
 		reply.Err = OK
 	} else if args.seq > kv.duplicateTable[args.ClerkID].seq {
+		// 这里args.seq > kv.duplicateTable[args.ClerkID].seq + 1也是可能的，因为本server可能是新leader，还没应用上一条日志，但client已经收到了之前的leader的结果，从而发送了下一条请求
 		op := Op{
 			Operation: args.Op,
 			Key:       args.Key,
@@ -142,8 +143,31 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *KVServer) ApplyLogs() {
-	for kv.killed() == false {
+	for ch := range kv.applyCh {
+		if kv.killed() {
+			return
+		}
+		kv.mu.Lock()
+		if ch.CommandValid {
+			if ch.CommandIndex != kv.currentIndex+1 {
+				DPrintf(serverRole, kv.me, ERROR, "applyCh index error, expect %v but %v\n", kv.currentIndex+1, ch.CommandIndex)
+			}
+			op, ok := ch.Command.(Op)
+			if !ok {
+				DPrintf(serverRole, kv.me, ERROR, "type error")
+			}
+			if op.Seq < kv.duplicateTable[op.ClerkID].seq+1 {
 
+			} else if op.Seq == kv.duplicateTable[op.ClerkID].seq+1 {
+
+			} else {
+				DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.duplicateTable[op.ClerkID].seq+1, op.Seq)
+			}
+
+			kv.currentIndex++
+			kv.cond.Broadcast()
+		}
+		kv.mu.Unlock()
 	}
 }
 
@@ -160,6 +184,8 @@ func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
 	kv.cond.Broadcast()
+	// 唤醒ApplyLogs gouroutine
+	kv.applyCh <- raft.ApplyMsg{}
 }
 
 func (kv *KVServer) killed() bool {

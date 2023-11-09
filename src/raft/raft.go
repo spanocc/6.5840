@@ -726,6 +726,8 @@ func (rf *Raft) ApplyLogs() {
 				msg.SnapshotValid = false
 			}
 
+			// 也可以先把要发送的日志都放到临时数组中，然后在通道传递数据时不上锁，数据都传递成功之后再上锁修改rf状态
+
 			// 设置成非阻塞管道, 防止上锁时通道阻塞造成死锁，如果通道满了，就等一段时间
 			select {
 			case rf.applyCh <- msg:
