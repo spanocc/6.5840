@@ -60,7 +60,7 @@ func (ck *Clerk) Get(key string) string {
 			value = reply.Value
 			break
 		} else {
-			DPrintf("ErrNoKey: key = %v\n", key)
+			DPrintf(ClerkRole, int(ck.clerkID), INFO, "ErrNoKey: key = %v\n", key)
 		}
 		ck.lastLeader = (ck.lastLeader + 1) % len(ck.servers)
 	}
@@ -92,7 +92,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		} else if reply.Err == OK {
 			break
 		} else { // ErrNoKey
-			DPrintf("should not reach here\n")
+			DPrintf(ClerkRole, int(ck.clerkID), ERROR, "should not reach here\n")
 		}
 		ck.lastLeader = (ck.lastLeader + 1) % len(ck.servers)
 	}

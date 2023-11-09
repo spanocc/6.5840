@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"log"
 	"sync"
 	"sync/atomic"
 
@@ -10,14 +9,14 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = false
+// const Debug = false
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
+// func DPrintf(format string, a ...interface{}) (n int, err error) {
+// 	if Debug {
+// 		log.Printf(format, a...)
+// 	}
+// 	return
+// }
 
 type Op struct {
 	// Your definitions here.
@@ -27,13 +26,19 @@ type Op struct {
 	Key       string
 	Value     string
 	ClerkID   int64
-	seq       int64
+	Seq       int64
 }
 
 type DuplicateTableEntry struct {
 	seq   int64
 	value string
 }
+
+// type RegisterEntry struct {
+// 	index int
+// 	err   Err
+// 	value string
+// }
 
 type KVServer struct {
 	mu      sync.Mutex
@@ -52,19 +57,94 @@ type KVServer struct {
 	duplicateTable map[int64]DuplicateTableEntry
 	// 接收到raft指令 唤醒Get和PutAppend RPC
 	cond *sync.Cond
-	// index -> {clerkID, seq}
-	// clerkID -> 等待结果 ?????
+	// clerkID -> 等待结果
+	// 同一clerk可能有多个rpc在等待，因为可能有延迟的rpc
+	// register map[int64]RegisterEntry
+
+	// 只需要通过当前执行到的最大索引currentIndex和duplicateTable来判断该rpc是否正确返回
+	currentIndex int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	op := Op{"Get", args.Key, "", args.ClerkID, args.seq}
+	kv.mu.Lock()
+
+	if args.seq == kv.duplicateTable[args.ClerkID].seq {
+		reply.Err = OK
+		reply.Value = kv.duplicateTable[args.ClerkID].value
+	} else if args.seq > kv.duplicateTable[args.ClerkID].seq {
+		op := Op{
+			Operation: "Get",
+			Key:       args.Key,
+			Value:     "",
+			ClerkID:   args.ClerkID,
+			Seq:       args.seq,
+		}
+		index, _, isLeader := kv.rf.Start(op)
+		if isLeader {
+			for kv.currentIndex < index {
+				kv.cond.Wait()
+			}
+			if kv.duplicateTable[args.ClerkID].seq == args.seq {
+				reply.Err = OK
+				reply.Value = kv.duplicateTable[args.ClerkID].value
+			} else if kv.duplicateTable[args.ClerkID].seq > args.seq {
+				reply.Err = ErrNoKey
+			} else {
+				reply.Err = ErrNoKey
+			}
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	} else {
+
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := Op{args.Op, args.Key, args.Value, args.ClerkID, args.seq}
+	kv.mu.Lock()
 
+	if args.seq == kv.duplicateTable[args.ClerkID].seq {
+		reply.Err = OK
+	} else if args.seq > kv.duplicateTable[args.ClerkID].seq {
+		op := Op{
+			Operation: args.Op,
+			Key:       args.Key,
+			Value:     args.Value,
+			ClerkID:   args.ClerkID,
+			Seq:       args.seq,
+		}
+		index, _, isLeader := kv.rf.Start(op)
+		if isLeader {
+			for kv.currentIndex < index {
+				kv.cond.Wait()
+			}
+			// 执行op的goroutine会设置好duplicateTable的seq和value，然后唤醒本gouroutine
+			if kv.duplicateTable[args.ClerkID].seq == args.seq {
+				reply.Err = OK
+			} else if kv.duplicateTable[args.ClerkID].seq > args.seq {
+				// 此时说明本rpc对应的操作已经返回给client了，所以本rpc可能是延迟的rpc，不需要执行什么回复
+				reply.Err = ErrNoKey // 稳妥一点，返回ErrNoKey，就算让client重试也不会出错
+			} else {
+				// 说明该index对应的op是其他的clerk
+				reply.Err = ErrNoKey
+			}
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	} else {
+		// DPrintf(serverRole, kv.me, ERROR, "should not reach here, against the assumption: a client will make only one call into a Clerk at a time\n")
+		// 不能abort，因为可能有延迟的rpc到达，无视就好
+	}
+
+	kv.mu.Unlock()
+}
+
+func (kv *KVServer) ApplyLogs() {
+	for kv.killed() == false {
+
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -79,6 +159,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	kv.cond.Broadcast()
 }
 
 func (kv *KVServer) killed() bool {
