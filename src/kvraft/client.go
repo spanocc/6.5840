@@ -53,14 +53,17 @@ func (ck *Clerk) Get(key string) string {
 	ck.seq++
 	for {
 		reply := GetReply{}
+		DPrintf(ClerkRole, int(ck.clerkID), INFO, "Get args: %v\n", args)
 		ok := ck.servers[ck.lastLeader].Call("KVServer.Get", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 
 		} else if reply.Err == OK {
 			value = reply.Value
+			DPrintf(ClerkRole, int(ck.clerkID), INFO, "Get reply: %v\n", args)
 			break
 		} else {
-			DPrintf(ClerkRole, int(ck.clerkID), INFO, "ErrNoKey: key = %v\n", key)
+			DPrintf(ClerkRole, int(ck.clerkID), INFO, "Get ErrNoKey: key = %v\n", key)
+			break
 		}
 		ck.lastLeader = (ck.lastLeader + 1) % len(ck.servers)
 	}
@@ -86,13 +89,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.seq++
 	for {
 		reply := PutAppendReply{}
+		DPrintf(ClerkRole, int(ck.clerkID), INFO, "PutAppend args: %v\n", args)
 		ok := ck.servers[ck.lastLeader].Call("KVServer.PutAppend", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 
 		} else if reply.Err == OK {
+			DPrintf(ClerkRole, int(ck.clerkID), INFO, "PutAppend reply: %v\n", args)
 			break
 		} else { // ErrNoKey
-			DPrintf(ClerkRole, int(ck.clerkID), ERROR, "should not reach here\n")
+			DPrintf(ClerkRole, int(ck.clerkID), ERROR, "should not reach here, err: %v\n", reply.Err)
 		}
 		ck.lastLeader = (ck.lastLeader + 1) % len(ck.servers)
 	}

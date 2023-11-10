@@ -3,6 +3,7 @@ package kvraft
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.5840/labgob"
 	"6.5840/labrpc"
@@ -64,6 +65,8 @@ type KVServer struct {
 
 	// 只需要通过当前执行到的最大索引currentIndex和duplicateTable来判断该rpc是否正确返回
 	currentIndex int
+
+	persister *raft.Persister
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -81,18 +84,22 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			ClerkID:   args.ClerkID,
 			Seq:       args.Seq,
 		}
-		index, _, isLeader := kv.rf.Start(op)
+		index, term, isLeader := kv.rf.Start(op)
 		if isLeader {
-			for kv.currentIndex < index {
+			for {
+				currentTerm, ok := kv.rf.GetState()
+				if kv.currentIndex >= index || currentTerm != term || !ok {
+					break
+				}
 				kv.cond.Wait()
 			}
 			if kv.duplicateTable[args.ClerkID].seq == args.Seq {
 				reply.Err = kv.duplicateTable[args.ClerkID].err
 				reply.Value = kv.duplicateTable[args.ClerkID].value
 			} else if kv.duplicateTable[args.ClerkID].seq > args.Seq {
-				reply.Err = ErrNoKey
+				reply.Err = ErrWrongLeader
 			} else {
-				reply.Err = ErrNoKey
+				reply.Err = ErrWrongLeader
 			}
 		} else {
 			reply.Err = ErrWrongLeader
@@ -100,6 +107,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	} else {
 
 	}
+
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -117,9 +126,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			ClerkID:   args.ClerkID,
 			Seq:       args.Seq,
 		}
-		index, _, isLeader := kv.rf.Start(op)
+		index, term, isLeader := kv.rf.Start(op)
 		if isLeader {
-			for kv.currentIndex < index {
+			for {
+				// 注意：rpc要及时唤醒并返回，labrpc不负责检查超时，如果不返回，clerk端会一直等待
+				currentTerm, ok := kv.rf.GetState()
+				if kv.currentIndex >= index || currentTerm != term || !ok {
+					break
+				}
 				kv.cond.Wait()
 			}
 			// 执行op的goroutine会设置好duplicateTable的seq和value，然后唤醒本gouroutine
@@ -127,10 +141,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = kv.duplicateTable[args.ClerkID].err
 			} else if kv.duplicateTable[args.ClerkID].seq > args.Seq {
 				// 此时说明本rpc对应的操作已经返回给client了，所以本rpc可能是延迟的rpc，不需要执行什么回复
-				reply.Err = ErrNoKey // 稳妥一点，返回ErrNoKey，就算让client重试也不会出错
+				reply.Err = ErrWrongLeader // 稳妥一点，返回ErrWrongLeader，就算让client重试也不会出错
 			} else {
-				// 说明该index对应的op是其他的clerk
-				reply.Err = ErrNoKey
+				// 1. 如果currenIndex > index 说明该index对应的op是其他的clerk
+				// 2. 否则一定是 currentTerm != term || !ok ，任期发生改变
+				reply.Err = ErrWrongLeader
 			}
 		} else {
 			reply.Err = ErrWrongLeader
@@ -144,53 +159,61 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *KVServer) ApplyLogs() {
-	for ch := range kv.applyCh {
-		if kv.killed() {
-			return
-		}
-		kv.mu.Lock()
-		if ch.CommandValid {
-			if ch.CommandIndex != kv.currentIndex+1 {
-				DPrintf(serverRole, kv.me, ERROR, "applyCh index error, expect %v but %v\n", kv.currentIndex+1, ch.CommandIndex)
-			}
+	for kv.killed() == false {
 
-			op, ok := ch.Command.(Op)
+		select {
+		case ch, ok := <-kv.applyCh:
 			if !ok {
-				DPrintf(serverRole, kv.me, ERROR, "type error\n")
+				return
 			}
+			kv.mu.Lock()
+			if ch.CommandValid {
+				if ch.CommandIndex != kv.currentIndex+1 {
+					DPrintf(serverRole, kv.me, ERROR, "applyCh index error, expect %v but %v\n", kv.currentIndex+1, ch.CommandIndex)
+				}
 
-			if op.Seq < kv.duplicateTable[op.ClerkID].seq+1 {
-				// 日志已apply nothing to do
-			} else if op.Seq == kv.duplicateTable[op.ClerkID].seq+1 {
-				if op.Operation == "Get" {
-					value, ok := kv.subject[op.Key]
-					if ok {
-						kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: value, err: OK}
+				op, ok := ch.Command.(Op)
+				if !ok {
+					DPrintf(serverRole, kv.me, ERROR, "type error\n")
+				}
+
+				if op.Seq < kv.duplicateTable[op.ClerkID].seq+1 {
+					// 日志已apply nothing to do
+				} else if op.Seq == kv.duplicateTable[op.ClerkID].seq+1 {
+					if op.Operation == "Get" {
+						value, ok := kv.subject[op.Key]
+						if ok {
+							kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: value, err: OK}
+						} else {
+							kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: "", err: ErrNoKey}
+						}
 					} else {
-						kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: "", err: ErrNoKey}
-					}
-				} else {
-					value, ok := kv.subject[op.Key]
-					if ok {
-						if op.Operation == "Append" {
-							kv.subject[op.Key] = value + op.Value
+						value, ok := kv.subject[op.Key]
+						if ok {
+							if op.Operation == "Append" {
+								kv.subject[op.Key] = value + op.Value
+							} else {
+								kv.subject[op.Key] = op.Value
+							}
 						} else {
 							kv.subject[op.Key] = op.Value
 						}
-					} else {
-						kv.subject[op.Key] = op.Value
+						kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, err: OK}
 					}
-					kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, err: OK}
+					DPrintf(serverRole, kv.me, INFO, "apply logs, op: %v, state: %v\n", op, kv.subject)
+				} else {
+					DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.duplicateTable[op.ClerkID].seq+1, op.Seq)
 				}
-				DPrintf(serverRole, kv.me, INFO, "apply logs, op: %v, state: %v\n", op, kv.subject)
-			} else {
-				DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.duplicateTable[op.ClerkID].seq+1, op.Seq)
-			}
 
-			kv.currentIndex++
-			kv.cond.Broadcast()
+				kv.currentIndex++
+			}
+			kv.mu.Unlock()
+		default:
+			// 这里休眠的间隔是多少会决定3A的Test:ops complete fast enough测试运行多长时间
+			time.Sleep(time.Millisecond * 10)
 		}
-		kv.mu.Unlock()
+		// 必须保证一段时间唤醒一次，来判断当前任期是否改变，以此来返回rpc，不然rpc会一直等待（比如，客户端调用rpc后，leader改变，由于新的leader不会提交之前的日志，所以server层在channel中收不到日志，也感知不到leader的改变，无法唤醒rpc返回）
+		kv.cond.Broadcast()
 	}
 }
 
@@ -209,7 +232,7 @@ func (kv *KVServer) Kill() {
 	kv.cond.Broadcast()
 	// 唤醒ApplyLogs gouroutine
 	// 如果关闭管道，而raft层正好在往管道里写数据，就会触发panic，所以最好不要主动close channel
-	kv.applyCh <- raft.ApplyMsg{}
+	// kv.applyCh <- raft.ApplyMsg{}
 }
 
 func (kv *KVServer) killed() bool {
@@ -244,7 +267,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.cond = sync.NewCond(&kv.mu)
 	kv.currentIndex = 0
 
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.persister = persister
+
+	// 对于无缓冲的channel的发送和输出端都用select会导致两方配合不到一起去，对于raft层，select是不必要的，所以还有优化空间，但是我现在不太想改raft
+	kv.applyCh = make(chan raft.ApplyMsg, 100)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.

@@ -485,6 +485,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	// 这样写也有问题，如果正好ApplyLogs协程在判断完killed之后还没cond.Wait之前，kill函数把dead设置为1并调用 Broadcast，可能会导致ApplyLogs无法被唤醒 (根本原因在于kill是通过原子操作)
 	rf.cond.Broadcast() // 防止ApplyLogs协程阻塞
 }
 
@@ -533,6 +534,7 @@ func (rf *Raft) AppendEmptyEntries() {
 					DPrintf(Leader, args.LeaderId, args.Term, DEBUG, "AppendEmptyEntries to %2d failed\n", i)
 				} else {
 					rf.mu.Lock()
+					DPrintf(rf.role, rf.me, rf.currentTerm, DEBUG, "AppendEmptyEntries args: {Term = %d, PrevLogIndex = %d, PrevLogTerm = %d} reply from S%d: {Term = %d, Success = %v, XTerm = %d, XIndex = %d, XLen = %d} current snapshot: {snapshotIndex = %v, snapshotTerm = %v}\n", args.Term, args.PrevLogIndex, args.PrevLogTerm, i, reply.Term, reply.Success, reply.XTerm, reply.XIndex, reply.XLen, rf.snapshotIndex, rf.snapshotTerm)
 					if reply.Term > rf.currentTerm {
 						rf.UpdateTerm(reply.Term)
 						rf.persist()
@@ -741,6 +743,7 @@ func (rf *Raft) ApplyLogs() {
 			default:
 				// 等待时必须解锁，上锁时睡眠就没意义了
 				rf.mu.Unlock()
+				// 也许睡眠间隔可以像server那样改成10ms
 				time.Sleep(time.Millisecond * 50)
 				rf.mu.Lock()
 			}
