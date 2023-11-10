@@ -32,6 +32,7 @@ type Op struct {
 type DuplicateTableEntry struct {
 	seq   int64
 	value string
+	err   Err
 }
 
 // type RegisterEntry struct {
@@ -69,26 +70,26 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 
-	if args.seq == kv.duplicateTable[args.ClerkID].seq {
+	if args.Seq == kv.duplicateTable[args.ClerkID].seq {
 		reply.Err = OK
 		reply.Value = kv.duplicateTable[args.ClerkID].value
-	} else if args.seq > kv.duplicateTable[args.ClerkID].seq {
+	} else if args.Seq > kv.duplicateTable[args.ClerkID].seq {
 		op := Op{
 			Operation: "Get",
 			Key:       args.Key,
 			Value:     "",
 			ClerkID:   args.ClerkID,
-			Seq:       args.seq,
+			Seq:       args.Seq,
 		}
 		index, _, isLeader := kv.rf.Start(op)
 		if isLeader {
 			for kv.currentIndex < index {
 				kv.cond.Wait()
 			}
-			if kv.duplicateTable[args.ClerkID].seq == args.seq {
-				reply.Err = OK
+			if kv.duplicateTable[args.ClerkID].seq == args.Seq {
+				reply.Err = kv.duplicateTable[args.ClerkID].err
 				reply.Value = kv.duplicateTable[args.ClerkID].value
-			} else if kv.duplicateTable[args.ClerkID].seq > args.seq {
+			} else if kv.duplicateTable[args.ClerkID].seq > args.Seq {
 				reply.Err = ErrNoKey
 			} else {
 				reply.Err = ErrNoKey
@@ -105,16 +106,16 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 
-	if args.seq == kv.duplicateTable[args.ClerkID].seq {
+	if args.Seq == kv.duplicateTable[args.ClerkID].seq {
 		reply.Err = OK
-	} else if args.seq > kv.duplicateTable[args.ClerkID].seq {
+	} else if args.Seq > kv.duplicateTable[args.ClerkID].seq {
 		// 这里args.seq > kv.duplicateTable[args.ClerkID].seq + 1也是可能的，因为本server可能是新leader，还没应用上一条日志，但client已经收到了之前的leader的结果，从而发送了下一条请求
 		op := Op{
 			Operation: args.Op,
 			Key:       args.Key,
 			Value:     args.Value,
 			ClerkID:   args.ClerkID,
-			Seq:       args.seq,
+			Seq:       args.Seq,
 		}
 		index, _, isLeader := kv.rf.Start(op)
 		if isLeader {
@@ -122,9 +123,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				kv.cond.Wait()
 			}
 			// 执行op的goroutine会设置好duplicateTable的seq和value，然后唤醒本gouroutine
-			if kv.duplicateTable[args.ClerkID].seq == args.seq {
-				reply.Err = OK
-			} else if kv.duplicateTable[args.ClerkID].seq > args.seq {
+			if kv.duplicateTable[args.ClerkID].seq == args.Seq {
+				reply.Err = kv.duplicateTable[args.ClerkID].err
+			} else if kv.duplicateTable[args.ClerkID].seq > args.Seq {
 				// 此时说明本rpc对应的操作已经返回给client了，所以本rpc可能是延迟的rpc，不需要执行什么回复
 				reply.Err = ErrNoKey // 稳妥一点，返回ErrNoKey，就算让client重试也不会出错
 			} else {
@@ -152,14 +153,36 @@ func (kv *KVServer) ApplyLogs() {
 			if ch.CommandIndex != kv.currentIndex+1 {
 				DPrintf(serverRole, kv.me, ERROR, "applyCh index error, expect %v but %v\n", kv.currentIndex+1, ch.CommandIndex)
 			}
+
 			op, ok := ch.Command.(Op)
 			if !ok {
-				DPrintf(serverRole, kv.me, ERROR, "type error")
+				DPrintf(serverRole, kv.me, ERROR, "type error\n")
 			}
+
 			if op.Seq < kv.duplicateTable[op.ClerkID].seq+1 {
-
+				// 日志已apply nothing to do
 			} else if op.Seq == kv.duplicateTable[op.ClerkID].seq+1 {
-
+				if op.Operation == "Get" {
+					value, ok := kv.subject[op.Key]
+					if ok {
+						kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: value, err: OK}
+					} else {
+						kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: "", err: ErrNoKey}
+					}
+				} else {
+					value, ok := kv.subject[op.Key]
+					if ok {
+						if op.Operation == "Append" {
+							kv.subject[op.Key] = value + op.Value
+						} else {
+							kv.subject[op.Key] = op.Value
+						}
+					} else {
+						kv.subject[op.Key] = op.Value
+					}
+					kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, err: OK}
+				}
+				DPrintf(serverRole, kv.me, INFO, "apply logs, op: %v, state: %v\n", op, kv.subject)
 			} else {
 				DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.duplicateTable[op.ClerkID].seq+1, op.Seq)
 			}
@@ -185,6 +208,7 @@ func (kv *KVServer) Kill() {
 	// Your code here, if desired.
 	kv.cond.Broadcast()
 	// 唤醒ApplyLogs gouroutine
+	// 如果关闭管道，而raft层正好在往管道里写数据，就会触发panic，所以最好不要主动close channel
 	kv.applyCh <- raft.ApplyMsg{}
 }
 
@@ -215,11 +239,16 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
+	kv.subject = make(map[string]string)
+	kv.duplicateTable = make(map[int64]DuplicateTableEntry)
+	kv.cond = sync.NewCond(&kv.mu)
+	kv.currentIndex = 0
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	go kv.ApplyLogs()
 
 	return kv
 }

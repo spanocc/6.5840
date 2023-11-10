@@ -46,12 +46,12 @@ func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
 	value := ""
+	args := GetArgs{}
+	args.Key = key
+	args.ClerkID = ck.clerkID
+	args.Seq = ck.seq
+	ck.seq++
 	for {
-		args := GetArgs{}
-		args.Key = key
-		args.ClerkID = ck.clerkID
-		args.seq = ck.seq
-		ck.seq++
 		reply := GetReply{}
 		ok := ck.servers[ck.lastLeader].Call("KVServer.Get", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
@@ -77,14 +77,14 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{}
+	args.Key = key
+	args.Value = value
+	args.Op = op
+	args.ClerkID = ck.clerkID
+	args.Seq = ck.seq
+	ck.seq++
 	for {
-		args := PutAppendArgs{}
-		args.Key = key
-		args.Value = value
-		args.Op = op
-		args.ClerkID = ck.clerkID
-		args.seq = ck.seq
-		ck.seq++
 		reply := PutAppendReply{}
 		ok := ck.servers[ck.lastLeader].Call("KVServer.PutAppend", &args, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
