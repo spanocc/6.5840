@@ -217,6 +217,16 @@ func (kv *KVServer) ApplyLogs() {
 	}
 }
 
+func (kv *KVServer) CheckSnapshot() {
+	for kv.killed() == false {
+		kv.mu.Lock()
+		if kv.maxraftstate != -1 {
+
+		}
+		kv.mu.Unlock()
+	}
+}
+
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
 // code to set rf.dead (without needing a lock),
