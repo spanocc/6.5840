@@ -203,8 +203,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "receive snapshot: {snapshot = %v, index = %v, term = %v}\n", rf.snapshot, rf.snapshotIndex, rf.snapshotTerm)
 
 	// server层进行快照，那一定是已经applied的了
-	if index < rf.lastApplied {
-		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot but not applied\n")
+	if index > rf.lastApplied {
+		DPrintf(rf.role, rf.me, rf.currentTerm, ERROR, "snapshot but not applied, snapshot index: %v, lastApplied: %v\n", index, rf.lastApplied)
 	}
 
 	if index < rf.snapshotIndex {

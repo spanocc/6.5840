@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,9 +32,9 @@ type Op struct {
 }
 
 type DuplicateTableEntry struct {
-	seq   int64
-	value string
-	err   Err
+	Seq   int64
+	Value string
+	Err   Err
 }
 
 // type RegisterEntry struct {
@@ -53,10 +54,10 @@ type KVServer struct {
 
 	// Your definitions here.
 
-	subject map[string]string
+	Subject map[string]string
 
 	// clerkID -> {seq, value}
-	duplicateTable map[int64]DuplicateTableEntry
+	DuplicateTable map[int64]DuplicateTableEntry
 	// 接收到raft指令 唤醒Get和PutAppend RPC
 	cond *sync.Cond
 	// clerkID -> 等待结果
@@ -64,7 +65,7 @@ type KVServer struct {
 	// register map[int64]RegisterEntry
 
 	// 只需要通过当前执行到的最大索引currentIndex和duplicateTable来判断该rpc是否正确返回
-	currentIndex int
+	CurrentIndex int
 
 	persister *raft.Persister
 }
@@ -73,10 +74,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 
-	if args.Seq == kv.duplicateTable[args.ClerkID].seq {
+	if args.Seq == kv.DuplicateTable[args.ClerkID].Seq {
 		reply.Err = OK
-		reply.Value = kv.duplicateTable[args.ClerkID].value
-	} else if args.Seq > kv.duplicateTable[args.ClerkID].seq {
+		reply.Value = kv.DuplicateTable[args.ClerkID].Value
+	} else if args.Seq > kv.DuplicateTable[args.ClerkID].Seq {
 		op := Op{
 			Operation: "Get",
 			Key:       args.Key,
@@ -88,15 +89,15 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		if isLeader {
 			for {
 				currentTerm, ok := kv.rf.GetState()
-				if kv.currentIndex >= index || currentTerm != term || !ok {
+				if kv.CurrentIndex >= index || currentTerm != term || !ok {
 					break
 				}
 				kv.cond.Wait()
 			}
-			if kv.duplicateTable[args.ClerkID].seq == args.Seq {
-				reply.Err = kv.duplicateTable[args.ClerkID].err
-				reply.Value = kv.duplicateTable[args.ClerkID].value
-			} else if kv.duplicateTable[args.ClerkID].seq > args.Seq {
+			if kv.DuplicateTable[args.ClerkID].Seq == args.Seq {
+				reply.Err = kv.DuplicateTable[args.ClerkID].Err
+				reply.Value = kv.DuplicateTable[args.ClerkID].Value
+			} else if kv.DuplicateTable[args.ClerkID].Seq > args.Seq {
 				reply.Err = ErrWrongLeader
 			} else {
 				reply.Err = ErrWrongLeader
@@ -115,9 +116,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 
-	if args.Seq == kv.duplicateTable[args.ClerkID].seq {
+	if args.Seq == kv.DuplicateTable[args.ClerkID].Seq {
 		reply.Err = OK
-	} else if args.Seq > kv.duplicateTable[args.ClerkID].seq {
+	} else if args.Seq > kv.DuplicateTable[args.ClerkID].Seq {
 		// 这里args.seq > kv.duplicateTable[args.ClerkID].seq + 1也是可能的，因为本server可能是新leader，还没应用上一条日志，但client已经收到了之前的leader的结果，从而发送了下一条请求
 		op := Op{
 			Operation: args.Op,
@@ -131,15 +132,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			for {
 				// 注意：rpc要及时唤醒并返回，labrpc不负责检查超时，如果不返回，clerk端会一直等待
 				currentTerm, ok := kv.rf.GetState()
-				if kv.currentIndex >= index || currentTerm != term || !ok {
+				if kv.CurrentIndex >= index || currentTerm != term || !ok {
 					break
 				}
 				kv.cond.Wait()
 			}
 			// 执行op的goroutine会设置好duplicateTable的seq和value，然后唤醒本gouroutine
-			if kv.duplicateTable[args.ClerkID].seq == args.Seq {
-				reply.Err = kv.duplicateTable[args.ClerkID].err
-			} else if kv.duplicateTable[args.ClerkID].seq > args.Seq {
+			if kv.DuplicateTable[args.ClerkID].Seq == args.Seq {
+				reply.Err = kv.DuplicateTable[args.ClerkID].Err
+			} else if kv.DuplicateTable[args.ClerkID].Seq > args.Seq {
 				// 此时说明本rpc对应的操作已经返回给client了，所以本rpc可能是延迟的rpc，不需要执行什么回复
 				reply.Err = ErrWrongLeader // 稳妥一点，返回ErrWrongLeader，就算让client重试也不会出错
 			} else {
@@ -168,8 +169,8 @@ func (kv *KVServer) ApplyLogs() {
 			}
 			kv.mu.Lock()
 			if ch.CommandValid {
-				if ch.CommandIndex != kv.currentIndex+1 {
-					DPrintf(serverRole, kv.me, ERROR, "applyCh index error, expect %v but %v\n", kv.currentIndex+1, ch.CommandIndex)
+				if ch.CommandIndex != kv.CurrentIndex+1 {
+					DPrintf(serverRole, kv.me, ERROR, "applyCh index error, expect %v but %v\n", kv.CurrentIndex+1, ch.CommandIndex)
 				}
 
 				op, ok := ch.Command.(Op)
@@ -177,35 +178,45 @@ func (kv *KVServer) ApplyLogs() {
 					DPrintf(serverRole, kv.me, ERROR, "type error\n")
 				}
 
-				if op.Seq < kv.duplicateTable[op.ClerkID].seq+1 {
+				if op.Seq < kv.DuplicateTable[op.ClerkID].Seq+1 {
 					// 日志已apply nothing to do
-				} else if op.Seq == kv.duplicateTable[op.ClerkID].seq+1 {
+				} else if op.Seq == kv.DuplicateTable[op.ClerkID].Seq+1 {
 					if op.Operation == "Get" {
-						value, ok := kv.subject[op.Key]
+						value, ok := kv.Subject[op.Key]
 						if ok {
-							kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: value, err: OK}
+							kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{Seq: op.Seq, Value: value, Err: OK}
 						} else {
-							kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, value: "", err: ErrNoKey}
+							kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{Seq: op.Seq, Value: "", Err: ErrNoKey}
 						}
 					} else {
-						value, ok := kv.subject[op.Key]
+						value, ok := kv.Subject[op.Key]
 						if ok {
 							if op.Operation == "Append" {
-								kv.subject[op.Key] = value + op.Value
+								kv.Subject[op.Key] = value + op.Value
 							} else {
-								kv.subject[op.Key] = op.Value
+								kv.Subject[op.Key] = op.Value
 							}
 						} else {
-							kv.subject[op.Key] = op.Value
+							kv.Subject[op.Key] = op.Value
 						}
-						kv.duplicateTable[op.ClerkID] = DuplicateTableEntry{seq: op.Seq, err: OK}
+						kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{Seq: op.Seq, Err: OK}
 					}
-					DPrintf(serverRole, kv.me, INFO, "apply logs, op: %v, state: %v\n", op, kv.subject)
+					DPrintf(serverRole, kv.me, INFO, "apply logs, op: %v, state: %v\n", op, kv.Subject)
 				} else {
-					DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.duplicateTable[op.ClerkID].seq+1, op.Seq)
+					DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.DuplicateTable[op.ClerkID].Seq+1, op.Seq)
 				}
 
-				kv.currentIndex++
+				kv.CurrentIndex++
+			} else if ch.SnapshotValid {
+				r := bytes.NewBuffer(ch.Snapshot)
+				d := labgob.NewDecoder(r)
+				if d.Decode(&kv.Subject) != nil || d.Decode(&kv.DuplicateTable) != nil || d.Decode(&kv.CurrentIndex) != nil {
+					DPrintf(serverRole, kv.me, ERROR, "Decode failed in ApplyLogs\n")
+				} else {
+					if kv.CurrentIndex != ch.SnapshotIndex {
+						DPrintf(serverRole, kv.me, ERROR, "snapshot index not match\n")
+					}
+				}
 			}
 			kv.mu.Unlock()
 		default:
@@ -221,9 +232,20 @@ func (kv *KVServer) CheckSnapshot() {
 	for kv.killed() == false {
 		kv.mu.Lock()
 		if kv.maxraftstate != -1 {
-
+			raftStateSize := kv.persister.RaftStateSize()
+			if raftStateSize >= kv.maxraftstate-64 {
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.Subject)
+				e.Encode(kv.DuplicateTable)
+				e.Encode(kv.CurrentIndex)
+				snapshot := w.Bytes()
+				kv.rf.Snapshot(kv.CurrentIndex, snapshot)
+			}
 		}
 		kv.mu.Unlock()
+
+		time.Sleep(time.Millisecond * 100)
 	}
 }
 
@@ -272,10 +294,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-	kv.subject = make(map[string]string)
-	kv.duplicateTable = make(map[int64]DuplicateTableEntry)
+	kv.Subject = make(map[string]string)
+	kv.DuplicateTable = make(map[int64]DuplicateTableEntry)
 	kv.cond = sync.NewCond(&kv.mu)
-	kv.currentIndex = 0
+	kv.CurrentIndex = 0
 
 	kv.persister = persister
 
@@ -285,6 +307,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	go kv.ApplyLogs()
+	go kv.CheckSnapshot()
 
 	return kv
 }
