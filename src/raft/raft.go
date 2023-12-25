@@ -738,6 +738,7 @@ func (rf *Raft) ApplyLogs() {
 		rf.mu.Unlock()
 
 		// 也可以先把要发送的日志都放到临时数组中，然后在通道传递数据时不上锁，数据都传递成功之后再上锁修改rf状态
+		// 但如果阻塞在发送管道上，本协程就可能无法退出了
 		for _, msg := range sendQueue {
 			rf.applyCh <- msg
 			rf.mu.Lock()

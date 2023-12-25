@@ -302,7 +302,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.persister = persister
 
 	// 对于无缓冲的channel的发送和输出端都用select会导致两方配合不到一起去，对于raft层，select是不必要的，所以还有优化空间，但是我现在不太想改raft
-	kv.applyCh = make(chan raft.ApplyMsg, 100)
+	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
