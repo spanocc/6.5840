@@ -699,6 +699,7 @@ func (rf *Raft) UpdateCommitIndex() {
 func (rf *Raft) ApplyLogs() {
 	for rf.killed() == false {
 		rf.mu.Lock()
+
 		for rf.lastApplied >= rf.commitIndex {
 			rf.cond.Wait()
 			// 唤醒时检查此服务器是否已经被kill了
@@ -707,7 +708,10 @@ func (rf *Raft) ApplyLogs() {
 				return
 			}
 		}
-		for rf.lastApplied < rf.commitIndex && rf.killed() == false { // 防止在kill的时候该goroutine正在此循环sleep中，而不能正常退出
+
+		sendQueue := []ApplyMsg{}
+
+		for rf.lastApplied < rf.commitIndex {
 			msg := ApplyMsg{}
 
 			if rf.lastApplied+1 <= rf.snapshotIndex {
@@ -728,27 +732,24 @@ func (rf *Raft) ApplyLogs() {
 				msg.SnapshotValid = false
 			}
 
-			// 也可以先把要发送的日志都放到临时数组中，然后在通道传递数据时不上锁，数据都传递成功之后再上锁修改rf状态
-
-			// 设置成非阻塞管道, 防止上锁时通道阻塞造成死锁，如果通道满了，就等一段时间
-			select {
-			case rf.applyCh <- msg:
-				if msg.CommandValid {
-					rf.lastApplied++
-					DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit log[%v]: {Command = %v}\n", msg.CommandIndex, msg.Command)
-				} else {
-					rf.lastApplied = msg.SnapshotIndex
-					DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit snapshot: {snapshot = %v, index = %v, term = %v}\n", msg.Snapshot, msg.SnapshotIndex, msg.SnapshotTerm)
-				}
-			default:
-				// 等待时必须解锁，上锁时睡眠就没意义了
-				rf.mu.Unlock()
-				// 也许睡眠间隔可以像server那样改成10ms
-				time.Sleep(time.Millisecond * 50)
-				rf.mu.Lock()
-			}
+			sendQueue = append(sendQueue, msg)
 		}
+
 		rf.mu.Unlock()
+
+		// 也可以先把要发送的日志都放到临时数组中，然后在通道传递数据时不上锁，数据都传递成功之后再上锁修改rf状态
+		for _, msg := range sendQueue {
+			rf.applyCh <- msg
+			rf.mu.Lock()
+			if msg.CommandValid {
+				rf.lastApplied++
+				DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit log[%v]: {Command = %v}\n", msg.CommandIndex, msg.Command)
+			} else {
+				rf.lastApplied = msg.SnapshotIndex
+				DPrintf(rf.role, rf.me, rf.currentTerm, INFO, "Commit snapshot: {snapshot = %v, index = %v, term = %v}\n", msg.Snapshot, msg.SnapshotIndex, msg.SnapshotTerm)
+			}
+			rf.mu.Unlock()
+		}
 	}
 }
 
