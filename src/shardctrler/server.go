@@ -51,7 +51,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	} else if args.Seq > sc.DuplicateTable[args.ClerkID].Seq {
 		op := Op{
 			Operation: "Join",
-			Args:      *args,
+			Servers:   args.Servers,
 		}
 
 		index, term, isLeader := sc.rf.Start(op)
@@ -92,7 +92,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	} else if args.Seq > sc.DuplicateTable[args.ClerkID].Seq {
 		op := Op{
 			Operation: "Leave",
-			Args:      *args,
+			GIDs:      args.GIDs,
 		}
 
 		index, term, isLeader := sc.rf.Start(op)
@@ -133,7 +133,8 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	} else if args.Seq > sc.DuplicateTable[args.ClerkID].Seq {
 		op := Op{
 			Operation: "Move",
-			Args:      *args,
+			Shard:     args.Shard,
+			GID:       args.GID,
 		}
 
 		index, term, isLeader := sc.rf.Start(op)
@@ -175,7 +176,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	} else if args.Seq > sc.DuplicateTable[args.ClerkID].Seq {
 		op := Op{
 			Operation: "Query",
-			Args:      *args,
+			Num:       args.Num,
 		}
 
 		index, term, isLeader := sc.rf.Start(op)
@@ -227,38 +228,17 @@ func (sc *ShardCtrler) ApplyLogs() {
 					DPrintf(ServerRole, sc.me, ERROR, "type error\n")
 				}
 
-				var seq int64
-				var clerkID int64
-
-				if op.Seq < kv.DuplicateTable[op.ClerkID].Seq+1 {
+				if op.Seq < sc.DuplicateTable[op.ClerkID].Seq+1 {
 					// 日志已apply nothing to do
-				} else if op.Seq == kv.DuplicateTable[op.ClerkID].Seq+1 {
-					if op.Operation == "Get" {
-						value, ok := kv.Subject[op.Key]
-						if ok {
-							kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{Seq: op.Seq, Value: value, Err: OK}
-						} else {
-							kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{Seq: op.Seq, Value: "", Err: ErrNoKey}
-						}
-					} else {
-						value, ok := kv.Subject[op.Key]
-						if ok {
-							if op.Operation == "Append" {
-								kv.Subject[op.Key] = value + op.Value
-							} else {
-								kv.Subject[op.Key] = op.Value
-							}
-						} else {
-							kv.Subject[op.Key] = op.Value
-						}
-						kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{Seq: op.Seq, Err: OK}
-					}
-					DPrintf(serverRole, kv.me, INFO, "apply logs, op: %v, state: %v\n", op, kv.Subject)
+				} else if op.Seq == sc.DuplicateTable[op.ClerkID].Seq+1 {
+
+					sc.PerformOperation(op)
+
 				} else {
-					DPrintf(serverRole, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.DuplicateTable[op.ClerkID].Seq+1, op.Seq)
+					DPrintf(ServerRole, sc.me, ERROR, "op seq error, expect %v but %v\n", sc.DuplicateTable[op.ClerkID].Seq+1, op.Seq)
 				}
 
-				kv.CurrentIndex++
+				sc.CurrentIndex++
 			} else if ch.SnapshotValid {
 				DPrintf(ServerRole, sc.me, ERROR, "should not reach here\n")
 			}
@@ -269,6 +249,29 @@ func (sc *ShardCtrler) ApplyLogs() {
 		}
 
 		sc.cond.Broadcast()
+	}
+}
+
+func (sc *ShardCtrler) PerformOperation(op Op) {
+	switch op.Operation {
+	case "Join":
+		{
+			// 求平均每个组大概分多少个分片，然后分配
+		}
+	case "Leave":
+		{
+
+		}
+	case "Move":
+		{
+
+		}
+	case "Query":
+		{
+
+		}
+	default:
+		DPrintf(ServerRole, sc.me, ERROR, "invalid log type: %v\n", op.Operation)
 	}
 }
 
