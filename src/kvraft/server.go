@@ -142,6 +142,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = kv.DuplicateTable[args.ClerkID].Err
 			} else if kv.DuplicateTable[args.ClerkID].Seq > args.Seq {
 				// 此时说明本rpc对应的操作已经返回给client了，所以本rpc可能是延迟的rpc，不需要执行什么回复
+				// 理论上，一个client同时只会发送一个rpc，且server不返回，client就会一直等待，那应该不会有这种情况
 				reply.Err = ErrWrongLeader // 稳妥一点，返回ErrWrongLeader，就算让client重试也不会出错
 			} else {
 				// 1. 如果currenIndex > index 说明该index对应的op是其他的clerk

@@ -8,7 +8,7 @@ import (
 )
 
 // Debugging
-const Debug = true
+var Debug = true
 
 type LogLevel int
 
@@ -66,13 +66,13 @@ func currentLogLevel() LogLevel {
 	return level
 }
 
-func DPrintf(role SharedCtrRole, serverId int, term int, level LogLevel, format string, a ...interface{}) (n int, err error) {
-	if level < currentLogLevel() {
+func DPrintf(role SharedCtrRole, serverId int, level LogLevel, format string, a ...interface{}) (n int, err error) {
+	if level < currentLogLevel() || Debug == false {
 		return
 	}
 	now := time.Now()
 	formattedTime := now.Format("15:04:05.000000")
-	prefix := fmt.Sprintf("%s %s S%-2d term:%-2d %s ", formattedTime, Role2String(role), serverId, term, Level2String(level))
+	prefix := fmt.Sprintf("%s %s S%-2d term:%-2d %s ", formattedTime, Role2String(role), serverId, Level2String(level))
 	format = prefix + format
 	fmt.Printf(format, a...)
 
