@@ -1,0 +1,123 @@
+09:41:47.016743 Foll S0  term:0  INFO  initialize finished
+09:41:47.017182 Foll S1  term:0  INFO  initialize finished
+09:41:47.017252 Foll S2  term:0  INFO  initialize finished
+Test (2D): snapshots basic ...
+09:41:47.017302 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.017309 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.017313 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.068098 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.068126 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.068130 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.118182 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.118226 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.118230 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.169094 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.169120 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.169126 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.219204 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.219230 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.219258 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.269355 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.269375 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.269380 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.319452 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.319488 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.319494 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.369782 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.369847 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.369861 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.419958 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.419984 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.419988 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.470247 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.470269 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.470274 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.520449 Foll S1  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.520487 Foll S2  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.520495 Foll S0  term:0  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.557451 Foll S2  term:0  INFO  election timeout
+09:41:47.558264 Foll S0  term:1  INFO  vote for -> 2
+09:41:47.558287 Foll S1  term:1  INFO  vote for -> 2
+09:41:47.558399 Lead S2  term:1  INFO  become leader - snapshot:{snapshot = [], index = 0, term = 0} - logs:[]
+09:41:47.571530 Foll S1  term:1  INFO  Start {Command = 3714095545283121910, index = -1, term = -1, isLeader = false}
+09:41:47.571666 Lead S2  term:1  INFO  nextIndex:[1 1 1]
+09:41:47.571706 Lead S2  term:1  INFO  Start {Command = 3714095545283121910, index = 1, term = 1, isLeader = true}
+09:41:47.572144 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 0, PrevLogTerm = 0} reply from S1: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:47.572183 Lead S2  term:1  INFO  nextIndex[1] = 2
+09:41:47.572194 Lead S2  term:1  INFO  Commit log[1]: {Command = 3714095545283121910}
+09:41:47.572344 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 0, PrevLogTerm = 0} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:47.572365 Lead S2  term:1  INFO  nextIndex[0] = 2
+09:41:47.620413 Foll S1  term:1  INFO  Commit log[1]: {Command = 3714095545283121910}
+09:41:47.620457 Foll S0  term:1  INFO  Commit log[1]: {Command = 3714095545283121910}
+09:41:48.142596 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142623 Lead S2  term:1  INFO  Start {Command = 6483928776419782593, index = 2, term = 1, isLeader = true}
+09:41:48.142649 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142659 Lead S2  term:1  INFO  Start {Command = 712080340455335269, index = 3, term = 1, isLeader = true}
+09:41:48.142681 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142689 Lead S2  term:1  INFO  Start {Command = 6988624338274278717, index = 4, term = 1, isLeader = true}
+09:41:48.142707 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142714 Lead S2  term:1  INFO  Start {Command = 6625955047728868136, index = 5, term = 1, isLeader = true}
+09:41:48.142735 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142743 Lead S2  term:1  INFO  Start {Command = 5314904709063258044, index = 6, term = 1, isLeader = true}
+09:41:48.142758 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142763 Lead S2  term:1  INFO  Start {Command = 219059714363483934, index = 7, term = 1, isLeader = true}
+09:41:48.142780 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142795 Lead S2  term:1  INFO  Start {Command = 6457387133785613106, index = 8, term = 1, isLeader = true}
+09:41:48.142811 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142837 Lead S2  term:1  INFO  Start {Command = 4998654124929652287, index = 9, term = 1, isLeader = true}
+09:41:48.142860 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142865 Lead S2  term:1  INFO  Start {Command = 3863005841045202167, index = 10, term = 1, isLeader = true}
+09:41:48.142937 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142951 Lead S2  term:1  INFO  Start {Command = 5468620610679317128, index = 11, term = 1, isLeader = true}
+09:41:48.142984 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.142995 Lead S2  term:1  INFO  Start {Command = 1228168475629067098, index = 12, term = 1, isLeader = true}
+09:41:48.143024 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.143033 Lead S2  term:1  INFO  Start {Command = 6471746448154432275, index = 13, term = 1, isLeader = true}
+09:41:48.143050 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.143055 Lead S2  term:1  INFO  Start {Command = 7105368666124056667, index = 14, term = 1, isLeader = true}
+09:41:48.143080 Lead S2  term:1  INFO  nextIndex:[2 2 1]
+09:41:48.143087 Lead S2  term:1  INFO  Start {Command = 5772351454670027858, index = 15, term = 1, isLeader = true}
+09:41:48.143117 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 1, PrevLogTerm = 1} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143131 Lead S2  term:1  INFO  nextIndex[0] = 11
+09:41:48.143137 Lead S2  term:1  INFO  Commit log[2]: {Command = 6483928776419782593}
+09:41:48.143143 Lead S2  term:1  INFO  Commit log[3]: {Command = 712080340455335269}
+09:41:48.143147 Lead S2  term:1  INFO  Commit log[4]: {Command = 6988624338274278717}
+09:41:48.143151 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 1, PrevLogTerm = 1} reply from S1: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143156 Lead S2  term:1  INFO  nextIndex[1] = 11
+09:41:48.143149 Foll S1  term:1  INFO  Start {Command = 5904611561022134847, index = -1, term = -1, isLeader = false}
+09:41:48.143160 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 1, PrevLogTerm = 1} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143172 Lead S2  term:1  INFO  nextIndex[0] = 11
+09:41:48.143324 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 1, PrevLogTerm = 1} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143336 Lead S2  term:1  INFO  nextIndex[0] = 16
+09:41:48.143324 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 1, PrevLogTerm = 1} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143336 Lead S2  term:1  INFO  nextIndex[0] = 16
+09:41:48.143354 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 10, PrevLogTerm = 1} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143364 Lead S2  term:1  INFO  nextIndex[0] = 16
+09:41:48.143432 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 10, PrevLogTerm = 1} reply from S0: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143446 Lead S2  term:1  INFO  nextIndex[0] = 16
+09:41:48.143452 Foll S0  term:1  INFO  Commit log[2]: {Command = 6483928776419782593}
+09:41:48.143467 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 10, PrevLogTerm = 1} reply from S1: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143476 Lead S2  term:1  INFO  nextIndex[1] = 16
+09:41:48.143492 Foll S1  term:1  INFO  Commit log[2]: {Command = 6483928776419782593}
+09:41:48.143498 Foll S1  term:1  INFO  Commit log[3]: {Command = 712080340455335269}
+09:41:48.143501 Foll S1  term:1  INFO  Commit log[4]: {Command = 6988624338274278717}
+09:41:48.143505 Foll S1  term:1  INFO  Commit log[5]: {Command = 6625955047728868136}
+09:41:48.143508 Foll S1  term:1  INFO  Commit log[6]: {Command = 5314904709063258044}
+09:41:48.143512 Foll S1  term:1  INFO  Commit log[7]: {Command = 219059714363483934}
+09:41:48.143515 Foll S1  term:1  INFO  Commit log[8]: {Command = 6457387133785613106}
+09:41:48.143540 Lead S2  term:1  INFO  AppendEntries args: {Term = 1, PrevLogIndex = 10, PrevLogTerm = 1} reply from S1: {Term = 1, Success = true, XTerm = 0, XIndex = 0, XLen = 0} current snapshot: {snapshotIndex = 0, snapshotTerm = 0}
+09:41:48.143548 Lead S2  term:1  INFO  nextIndex[1] = 16
+09:41:48.143557 Foll S1  term:1  INFO  receive snapshot: {snapshot = [], index = 0, term = 0}
+09:41:48.143563 Foll S1  term:1  ERROR snapshot but not applied, snapshot index: 9, lastApplied: 8
+09:41:48.143570 Foll S0  term:1  INFO  Commit log[3]: {Command = 712080340455335269}
+09:41:48.143577 Foll S0  term:1  INFO  Commit log[4]: {Command = 6988624338274278717}
+panic: 09:41:48.143563 Foll S1  term:1  ERROR snapshot but not applied, snapshot index: %v, lastApplied: %v
+
+
+goroutine 29 [running]:
+6.5840/raft.DPrintf(0x2, 0x0?, 0x0?, 0x3, {0x124faaa, 0x3e}, {0xc0000a0d40, 0x2, 0x2})
+	/Users/liuluhang/llh/code/pc/6.5840/src/raft/util.go:74 +0x289
+6.5840/raft.(*Raft).Snapshot(0xc000100100, 0x9, {0xc000274000, 0xa8, 0xb0})
+	/Users/liuluhang/llh/code/pc/6.5840/src/raft/raft.go:207 +0x1f8
+6.5840/raft.(*config).applierSnap(0xc0000fc000, 0x1, 0x0?)
+	/Users/liuluhang/llh/code/pc/6.5840/src/raft/config.go:254 +0x8d8
