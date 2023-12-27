@@ -41,6 +41,7 @@ func (ck *Clerk) Query(num int) Config {
 	args.ClerkID = ck.clerkID
 	args.Seq = ck.seq
 	args.Num = num
+	ck.seq++
 
 	for {
 		// try each known server.
@@ -61,6 +62,9 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.ClerkID = ck.clerkID
 	args.Seq = ck.seq
 	args.Servers = servers
+	ck.seq++
+
+	DPrintf(ClerkRole, int(ck.clerkID), INFO, "join rpc, args: %v\n", args)
 
 	for {
 		// try each known server.
@@ -68,6 +72,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			var reply JoinReply
 			ok := srv.Call("ShardCtrler.Join", args, &reply)
 			if ok && reply.WrongLeader == false {
+				DPrintf(ClerkRole, int(ck.clerkID), INFO, "join rpc return, args: %v, reply: %v\n", args, reply)
 				return
 			}
 		}
@@ -81,6 +86,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.ClerkID = ck.clerkID
 	args.Seq = ck.seq
 	args.GIDs = gids
+	ck.seq++
 
 	for {
 		// try each known server.
@@ -102,6 +108,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.Seq = ck.seq
 	args.Shard = shard
 	args.GID = gid
+	ck.seq++
 
 	for {
 		// try each known server.
