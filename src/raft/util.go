@@ -60,7 +60,16 @@ func currentLogLevel() LogLevel {
 	return level
 }
 
+func IsLogStarted() bool {
+	v := os.Getenv("RAFT")
+	return v != "off"
+}
+
 func DPrintf(role RaftRole, serverId int, term int, level LogLevel, format string, a ...interface{}) (n int, err error) {
+	if !IsLogStarted() {
+		return
+	}
+
 	if level < currentLogLevel() {
 		return
 	}

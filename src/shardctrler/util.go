@@ -72,7 +72,7 @@ func DPrintf(role SharedCtrRole, serverId int, level LogLevel, format string, a 
 	}
 	now := time.Now()
 	formattedTime := now.Format("15:04:05.000000")
-	prefix := fmt.Sprintf("%s %s S%-2d term:%-2d %s ", formattedTime, Role2String(role), serverId, Level2String(level))
+	prefix := fmt.Sprintf("%s %s S%-2d %s ", formattedTime, Role2String(role), serverId, Level2String(level))
 	format = prefix + format
 	fmt.Printf(format, a...)
 
