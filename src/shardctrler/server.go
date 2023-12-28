@@ -365,7 +365,18 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 				}
 			}
 
-			if idx != len(distributedShards) {
+			DPrintf(ServerRole, sc.me, INFO, "the value of averLoad is %v\n", averLoad)
+
+			for _, g := range orderedGIDs {
+				if idx >= len(distributedShards) {
+					break
+				}
+
+				ctlShards[g][distributedShards[idx]] = struct{}{}
+				idx++
+			}
+
+			if idx < len(distributedShards) {
 				DPrintf(ServerRole, sc.me, ERROR, "the length of distributeShards is not correct: %v, idx: %v\n", len(distributedShards), idx)
 			}
 
