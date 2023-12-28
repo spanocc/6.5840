@@ -1,6 +1,7 @@
 package shardctrler
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -281,7 +282,7 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 
 			gNum := len(oldConfig.Groups) + len(servers)
 			if gNum > NShards {
-				DPrintf(ServerRole, sc.me, ERROR, "too much groups, old: %v, add: %v", len(oldConfig.Groups), len(servers))
+				DPrintf(ServerRole, sc.me, WARN, "too much groups, old: %v, add: %v\n", len(oldConfig.Groups), len(servers))
 			}
 
 			averLoad := NShards / gNum
@@ -295,22 +296,45 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 					distributedShards = append(distributedShards, s)
 					decNum -= len(distributedShards)
 				} else {
+					if _, ok := ctlShards[g]; !ok {
+						ctlShards[g] = map[int]struct{}{}
+					}
 					ctlShards[g][s] = struct{}{}
 				}
 			}
 
+			// 由于map的遍历是随机顺序的，为保证每个节点的配置变化是相同的，所以需要顺序遍历
+			orderedGIDs := []int{}
+			for g := range ctlShards {
+				orderedGIDs = append(orderedGIDs, g)
+			}
+			sort.Slice(orderedGIDs, func(i, j int) bool {
+				return orderedGIDs[i] < orderedGIDs[j]
+			})
+
 			// 把已有组中多余的分片先放到分发队列中
 			critical := averLoad + 1 // 每个组最多包含的分片数量
 			for decNum > 0 {
-				for _, shards := range ctlShards {
+				for _, g := range orderedGIDs {
+					shards := ctlShards[g]
 					del := min(len(shards)-critical, decNum)
 
-					for k := range shards {
+					// 同理，删除也需要有序
+					orderedShards := []int{}
+					for s := range shards {
+						orderedShards = append(orderedShards, s)
+					}
+					sort.Slice(orderedShards, func(i, j int) bool {
+						return orderedShards[i] < orderedShards[j]
+					})
+
+					for _, k := range orderedShards {
 						if del <= 0 {
 							break
 						}
 						delete(shards, k)
 						distributedShards = append(distributedShards, k)
+						decNum--
 						del--
 					}
 
@@ -321,9 +345,21 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 				critical--
 			}
 
-			idx := 0
+			// 同理，需要有序
+			orderedGIDs = make([]int, 0)
 			for g := range servers {
+				orderedGIDs = append(orderedGIDs, g)
+			}
+			sort.Slice(orderedGIDs, func(i, j int) bool {
+				return orderedGIDs[i] < orderedGIDs[j]
+			})
+
+			idx := 0
+			for _, g := range orderedGIDs {
 				for i := 0; i < averLoad; i++ {
+					if _, ok := ctlShards[g]; !ok {
+						ctlShards[g] = map[int]struct{}{}
+					}
 					ctlShards[g][distributedShards[idx]] = struct{}{}
 					idx++
 				}
@@ -335,6 +371,8 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 
 			newConfig := Config{}
 			newConfig.Num = oldConfig.Num + 1
+			newConfig.Groups = make(map[int][]string)
+
 			for k, v := range oldConfig.Groups {
 				if _, ok := newConfig.Groups[k]; ok {
 					DPrintf(ServerRole, sc.me, ERROR, "repeated gid: %v\n", k)
@@ -356,6 +394,8 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 			}
 
 			sc.configs = append(sc.configs, newConfig)
+
+			DPrintf(ServerRole, sc.me, INFO, "after op: %v, config: %v\n", op, sc.configs[len(sc.configs)-1])
 		}
 	case "Leave":
 		{
@@ -384,36 +424,68 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 				}
 
 				if !removed {
+					if _, ok := ctlShards[v]; !ok {
+						ctlShards[v] = map[int]struct{}{}
+					}
 					ctlShards[v][s] = struct{}{}
 				}
 			}
 
-			gNum := len(oldConfig.Groups) - len(GIDs)
-			averLoad := NShards / gNum
-			disIdx := 0
-
-			// 把分发队列中的切片分到剩余组中
-			critical := averLoad // 每个组最多包含的分片数量
-			for disIdx < len(distributedShards) {
-				for _, shards := range ctlShards {
-					add := min(critical-len(shards), len(distributedShards)-disIdx)
-
-					for add > 0 {
-						shards[distributedShards[disIdx]] = struct{}{}
-						disIdx++
-						add--
-					}
-
-					if disIdx >= len(distributedShards) {
+			for g := range oldConfig.Groups {
+				removed := false
+				for _, gid := range GIDs {
+					if g == gid {
+						removed = true
 						break
 					}
 				}
 
-				critical++
+				if !removed {
+					if _, ok := ctlShards[g]; !ok {
+						ctlShards[g] = map[int]struct{}{}
+					}
+				}
+			}
+
+			gNum := len(oldConfig.Groups) - len(GIDs)
+
+			if gNum != 0 {
+				averLoad := max(NShards/gNum, 1)
+				disIdx := 0
+
+				orderedGIDs := []int{}
+				for g := range ctlShards {
+					orderedGIDs = append(orderedGIDs, g)
+				}
+				sort.Slice(orderedGIDs, func(i, j int) bool {
+					return orderedGIDs[i] < orderedGIDs[j]
+				})
+
+				// 把分发队列中的切片分到剩余组中
+				critical := averLoad // 每个组最多包含的分片数量
+				for disIdx < len(distributedShards) {
+					for _, g := range orderedGIDs {
+						shards := ctlShards[g]
+						add := min(critical-len(shards), len(distributedShards)-disIdx)
+
+						for add > 0 {
+							shards[distributedShards[disIdx]] = struct{}{}
+							disIdx++
+							add--
+						}
+
+						if disIdx >= len(distributedShards) {
+							break
+						}
+					}
+
+					critical++
+				}
 			}
 
 			newConfig := Config{}
 			newConfig.Num = oldConfig.Num + 1
+			newConfig.Groups = make(map[int][]string)
 
 			for g, shards := range ctlShards {
 				newConfig.Groups[g] = oldConfig.Groups[g]
@@ -423,6 +495,8 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 			}
 
 			sc.configs = append(sc.configs, newConfig)
+
+			DPrintf(ServerRole, sc.me, INFO, "after op: %v, config: %v\n", op, sc.configs[len(sc.configs)-1])
 		}
 	case "Move":
 		{
@@ -430,6 +504,8 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 
 			newConfig := Config{}
 			newConfig.Num = oldConfig.Num + 1
+			newConfig.Groups = make(map[int][]string)
+
 			for i, v := range oldConfig.Shards {
 				if i == op.Shard {
 					newConfig.Shards[i] = op.GID
@@ -441,6 +517,10 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 			for g, servers := range oldConfig.Groups {
 				newConfig.Groups[g] = servers
 			}
+
+			sc.configs = append(sc.configs, newConfig)
+
+			DPrintf(ServerRole, sc.me, INFO, "after op: %v, config: %v\n", op, sc.configs[len(sc.configs)-1])
 		}
 	case "Query":
 		{
@@ -455,6 +535,8 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 			for g, server := range sc.configs[idx].Groups {
 				config.Groups[g] = server
 			}
+
+			DPrintf(ServerRole, sc.me, INFO, "after op: %v, config: %v\n", op, sc.configs[idx])
 		}
 	default:
 		DPrintf(ServerRole, sc.me, ERROR, "invalid log type: %v\n", op.Operation)
@@ -466,7 +548,7 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 		Config: config,
 	}
 
-	DPrintf(ServerRole, sc.me, INFO, "after op: %v, config: %v\n", op.Operation, sc.configs[len(sc.configs)-1])
+	DPrintf(ServerRole, sc.me, INFO, "configs: %v\n", sc.configs)
 }
 
 // the tester calls Kill() when a ShardCtrler instance won't
@@ -476,7 +558,6 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 func (sc *ShardCtrler) Kill() {
 	sc.rf.Kill()
 	// Your code here, if desired.
-	Debug = false
 }
 
 // needed by shardkv tester

@@ -43,12 +43,15 @@ func (ck *Clerk) Query(num int) Config {
 	args.Num = num
 	ck.seq++
 
+	DPrintf(ClerkRole, int(ck.clerkID), INFO, "query rpc, args: %v\n", args)
+
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply QueryReply
 			ok := srv.Call("ShardCtrler.Query", args, &reply)
 			if ok && reply.WrongLeader == false {
+				DPrintf(ClerkRole, int(ck.clerkID), INFO, "query rpc return, args: %v, reply: %v\n", args, reply)
 				return reply.Config
 			}
 		}
