@@ -1,4 +1,4 @@
-package shardctrler
+package shardkv
 
 import (
 	"fmt"
@@ -40,9 +40,9 @@ const (
 
 func Role2String(scr SharedCtrRole) string {
 	if scr == ClerkRole {
-		return string("Shared-Clerk")
+		return string("kvClerk ")
 	} else if scr == ServerRole {
-		return string("SharedCtrler")
+		return string("kvServer")
 	}
 	return "ERROR Role"
 }
@@ -66,13 +66,8 @@ func currentLogLevel() LogLevel {
 	return level
 }
 
-func IsLogStarted() bool {
-	v := os.Getenv("CTR")
-	return v != "off"
-}
-
 func DPrintf(role SharedCtrRole, serverId int, level LogLevel, format string, a ...interface{}) (n int, err error) {
-	if level < currentLogLevel() || Debug == false || !IsLogStarted() {
+	if level < currentLogLevel() || Debug == false {
 		return
 	}
 	now := time.Now()

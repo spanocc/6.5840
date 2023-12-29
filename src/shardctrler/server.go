@@ -365,8 +365,7 @@ func (sc *ShardCtrler) PerformOperation(op Op) {
 				}
 			}
 
-			DPrintf(ServerRole, sc.me, INFO, "the value of averLoad is %v\n", averLoad)
-
+			// 如果是第一次加入的话，可能averload * join的num < nShards, 所以需要再加一次
 			for _, g := range orderedGIDs {
 				if idx >= len(distributedShards) {
 					break
