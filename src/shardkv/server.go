@@ -162,9 +162,10 @@ func (kv *ShardKV) SendShards(gid int, shards map[string]string) {
 func (kv *ShardKV) RecvShards(args *ShardsArgs, reply *ShardsReply) {
 	kv.mu.Lock()
 
-	if int64(args.ConfigNum) == kv.DuplicateTable[int64(args.GID)].Seq && kv.DuplicateTable[int64(args.GID)].Err != ErrWrongGroup {
+	// 发送切片不会出现wrong group错误，收到切片的组不管怎么样都要持有这个切片
+	if int64(args.ConfigNum) == kv.DuplicateTable[int64(args.GID)].Seq {
 		reply.Err = kv.DuplicateTable[int64(args.GID)].Err
-	} else if int64(args.ConfigNum) > kv.DuplicateTable[int64(args.GID)].Seq || (int64(args.ConfigNum) == kv.DuplicateTable[int64(args.GID)].Seq && kv.DuplicateTable[args.ClerkID].Err == ErrWrongGroup) {
+	} else if int64(args.ConfigNum) > kv.DuplicateTable[int64(args.GID)].Seq {
 		op := Op{
 			Operation: "Shards",
 			ClerkID:   int64(args.GID),
@@ -196,6 +197,10 @@ func (kv *ShardKV) RecvShards(args *ShardsArgs, reply *ShardsReply) {
 	}
 
 	kv.mu.Unlock()
+}
+
+func (kv *ShardKV) MonitorConfig() {
+
 }
 
 func (kv *ShardKV) ApplyLogs() {
@@ -304,6 +309,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.DuplicateTable = make(map[int64]DuplicateTableEntry)
 	kv.cond = sync.NewCond(&kv.mu)
 	kv.CurrentIndex = 0
+	kv.configNum = 0
 
 	kv.persister = persister
 
