@@ -263,7 +263,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	rf.mu.Lock()
 
-	// 不管给不给投票，发现更大的任期就要更新(为什么？)。所以任期相同不代表投过票了，要通过votedfor判断
+	// 不管给不给投票，发现更大的任期就要更新(为什么？ 简化实现？ 论文中提到在一定时间内如果收到了leader的心跳，则无视这个投票请求)。所以任期相同不代表投过票了，要通过votedfor判断
 	if args.Term > rf.currentTerm {
 		rf.UpdateTerm(args.Term)
 		rf.persist()

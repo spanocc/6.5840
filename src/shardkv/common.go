@@ -48,8 +48,8 @@ type GetReply struct {
 }
 
 type ShardsArgs struct {
+	ShardNum  int
 	Shards    map[string]string
-	GID       int
 	ConfigNum int
 }
 
