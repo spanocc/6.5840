@@ -1,6 +1,7 @@
 package shardkv
 
 import (
+	"bytes"
 	"sync"
 	"time"
 
@@ -331,7 +332,15 @@ func (kv *ShardKV) ApplyLogs() {
 
 				kv.CurrentIndex++
 			} else if ch.SnapshotValid {
-				DPrintf(ServerRole, kv.gid, kv.me, ERROR, "should not reach here\n")
+				r := bytes.NewBuffer(ch.Snapshot)
+				d := labgob.NewDecoder(r)
+				if d.Decode(&kv.masterShards) != nil || d.Decode(&kv.DuplicateTable) != nil || d.Decode(&kv.CurrentIndex) != nil {
+					DPrintf(ServerRole, kv.gid, kv.me, ERROR, "Decode failed in ApplyLogs\n")
+				} else {
+					if kv.CurrentIndex != ch.SnapshotIndex {
+						DPrintf(ServerRole, kv.gid, kv.me, ERROR, "snapshot index not match\n")
+					}
+				}
 			}
 
 			kv.mu.Unlock()
@@ -474,6 +483,27 @@ func (kv *ShardKV) PerformOperation(op Op) {
 	}
 }
 
+func (kv *ShardKV) CheckSnapshot() {
+	for {
+		kv.mu.Lock()
+		if kv.maxraftstate != -1 {
+			raftStateSize := kv.persister.RaftStateSize()
+			if raftStateSize >= kv.maxraftstate-64 {
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.masterShards)
+				e.Encode(kv.DuplicateTable)
+				e.Encode(kv.CurrentIndex)
+				snapshot := w.Bytes()
+				kv.rf.Snapshot(kv.CurrentIndex, snapshot)
+			}
+		}
+		kv.mu.Unlock()
+
+		time.Sleep(time.Millisecond * 100)
+	}
+}
+
 // the tester calls Kill() when a ShardKV instance won't
 // be needed again. you are not required to do anything
 // in Kill(), but it might be convenient to (for example)
@@ -558,6 +588,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	go kv.ApplyLogs()
 	go kv.MonitorConfig()
+	go kv.CheckSnapshot()
 
 	return kv
 }
