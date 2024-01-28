@@ -57,6 +57,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.clerkID = nrand()
+	ck.seq = 1
 	return ck
 }
 
@@ -80,10 +82,12 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
+				DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "gid: %v shard: %v Get key: %v, value: %v\n", gid, shard, key, reply.Value)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "ErrWrongGroup gid: %v shard: %v Get key: %v, value: %v\n", gid, shard, key, reply.Value)
 					break
 				}
 				// ... not ok, or ErrWrongLeader
@@ -92,6 +96,7 @@ func (ck *Clerk) Get(key string) string {
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "config %v shards: %v\n", ck.config.Num, ck.config.Shards)
 	}
 
 	return ""
@@ -117,9 +122,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
+					DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "gid: %v shard: %v %v key: %v, value: %v, now: %v\n", gid, shard, op, key, value, reply.Value)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "ErrWrongGroup gid: %v shard %v, %v key: %v, value: %v\n", gid, shard, op, key, value)
 					break
 				}
 				// ... not ok, or ErrWrongLeader
@@ -128,6 +135,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "config %v shards: %v\n", ck.config.Num, ck.config.Shards)
 	}
 }
 

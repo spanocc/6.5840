@@ -86,10 +86,10 @@ type ShardKV struct {
 	// Your definitions here.
 	mck *shardctrler.Clerk
 
-	masterShards map[int]struct {
+	MasterShards map[int]struct {
 		ConfigNum int      // 这个切片对应的配置号，如果在转移切片后，本切片的配置号仍然是旧的，则可以删除此切片 (防止出现这种情况: 在配置10把切片转移出去，在配置11切片又转移回来，此时才收到配置10的转移成功应答，但此时发现切片的配置号是11，所以不能删除此切片)
-		master    int      // master == gid 代表可以服务此切片 master == -1 表示不拥有此切片 master == 其他组gid 表示切片正在发送给这个组，所以切片不能发送给其他组了
-		servers   []string // 切片要发给的组对应的servers
+		Master    int      // master == gid 代表可以服务此切片 master == -1 表示不拥有此切片 master == 其他组gid 表示切片正在发送给这个组，所以切片不能发送给其他组了
+		Servers   []string // 切片要发给的组对应的servers
 		Subject   map[string]string
 	}
 
@@ -97,6 +97,8 @@ type ShardKV struct {
 	cond           *sync.Cond
 	CurrentIndex   int
 	persister      *raft.Persister
+
+	FirstConfig bool
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -149,6 +151,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if args.Seq == kv.DuplicateTable[args.ClerkID].Seq && kv.DuplicateTable[args.ClerkID].Err != ErrWrongGroup {
 		reply.Err = kv.DuplicateTable[args.ClerkID].Err
+		reply.Value = kv.DuplicateTable[args.ClerkID].Value
 	} else if args.Seq > kv.DuplicateTable[args.ClerkID].Seq || (args.Seq == kv.DuplicateTable[args.ClerkID].Seq && kv.DuplicateTable[args.ClerkID].Err == ErrWrongGroup) {
 		op := Op{
 			Operation: args.Op,
@@ -170,6 +173,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 			if kv.DuplicateTable[args.ClerkID].Seq == args.Seq {
 				reply.Err = kv.DuplicateTable[args.ClerkID].Err
+				reply.Value = kv.DuplicateTable[args.ClerkID].Value
 			} else if kv.DuplicateTable[args.ClerkID].Seq > args.Seq {
 				reply.Err = ErrWrongLeader
 			} else {
@@ -179,7 +183,6 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			reply.Err = ErrWrongLeader
 		}
 	} else {
-
 	}
 
 	kv.mu.Unlock()
@@ -191,6 +194,8 @@ func (kv *ShardKV) SendShards(servers []string, configNum int, shardNum int, sha
 	args.ShardNum = shardNum
 	args.Shards = shards
 
+	DPrintf(ServerRole, kv.gid, kv.me, INFO, "send shards start, servers: %v, shards: %v", servers, shardNum)
+
 Loop:
 	for {
 		for si := 0; si < len(servers); si++ {
@@ -201,11 +206,13 @@ Loop:
 				break Loop
 			}
 			if ok && reply.Err == ErrWrongGroup {
-				DPrintf(ServerRole, kv.gid, kv.me, ERROR, "should not reach here")
+				DPrintf(ServerRole, kv.gid, kv.me, ERROR, "should not reach here\n")
 			}
 			// ... not ok, or ErrWrongLeader
 		}
 	}
+
+	DPrintf(ServerRole, kv.gid, kv.me, INFO, "send shards succ, servers: %v, shards: %v, subject: %v", servers, shardNum, shards)
 
 	op := Op{
 		Operation: "ShardsOver",
@@ -228,6 +235,7 @@ func (kv *ShardKV) RecvShards(args *ShardsArgs, reply *ShardsReply) {
 			Operation: "RecvShards",
 			ClerkID:   int64(args.ShardNum), // 以切片编号作为唯一客户端id， 因为同一个组在同一个config中 可能发送多个组切片， 但一个组切片在同一个confignum中只会被一个组提供服务
 			Seq:       int64(args.ConfigNum),
+			ConfigNum: args.ConfigNum,
 			Shards:    args.Shards,
 		}
 
@@ -260,9 +268,15 @@ func (kv *ShardKV) RecvShards(args *ShardsArgs, reply *ShardsReply) {
 
 func (kv *ShardKV) MonitorConfig() {
 	for {
-		config := kv.mck.Query(-1)
 
 		kv.mu.Lock()
+		ok := kv.FirstConfig
+		kv.mu.Unlock()
+
+		config := kv.mck.Query(-1)
+		if config.Num > 1 && !ok {
+			config = kv.mck.Query(1)
+		}
 
 		op := Op{
 			Operation: "Reconfigure",
@@ -272,8 +286,6 @@ func (kv *ShardKV) MonitorConfig() {
 		// 不需要结果, 因为每100ms会start一次
 		kv.rf.Start(op)
 
-		kv.mu.Unlock()
-
 		time.Sleep(100 * time.Millisecond)
 	}
 }
@@ -282,15 +294,15 @@ func (kv *ShardKV) TransferShards() {
 	for {
 		kv.mu.Lock()
 
-		for shardNum, shards := range kv.masterShards {
-			if shards.master != kv.gid {
+		for shardNum, shards := range kv.MasterShards {
+			if shards.Master != kv.gid && shards.Master != -1 {
 				transferShards := map[string]string{}
 
 				for k, v := range shards.Subject {
 					transferShards[k] = v
 				}
 
-				go kv.SendShards(shards.servers, shards.ConfigNum, shardNum, transferShards)
+				go kv.SendShards(shards.Servers, shards.ConfigNum, shardNum, transferShards)
 			}
 		}
 
@@ -320,21 +332,22 @@ func (kv *ShardKV) ApplyLogs() {
 					DPrintf(ServerRole, kv.gid, kv.me, ERROR, "type error\n")
 				}
 
-				if op.Operation == "Reconfigure" || op.Operation == "ShardsOver" {
+				if op.Operation == "Reconfigure" || op.Operation == "ShardsOver" || op.Operation == "RecvShards" {
 					kv.PerformOperation(op)
-				} else if op.Seq == kv.DuplicateTable[op.ClerkID].Seq+1 || (op.Seq == kv.DuplicateTable[op.ClerkID].Seq && kv.DuplicateTable[op.ClerkID].Err == ErrWrongGroup) {
+				} else if op.Seq >= kv.DuplicateTable[op.ClerkID].Seq+1 || (op.Seq == kv.DuplicateTable[op.ClerkID].Seq && kv.DuplicateTable[op.ClerkID].Err == ErrWrongGroup) {
 					kv.PerformOperation(op)
 				} else if op.Seq < kv.DuplicateTable[op.ClerkID].Seq+1 {
 
 				} else {
-					DPrintf(ServerRole, kv.gid, kv.me, ERROR, "op seq error, expect %v but %v\n", kv.DuplicateTable[op.ClerkID].Seq+1, op.Seq)
+					// 对于这种分片分组情况，序列号不是以此加一递增的
+					// DPrintf(ServerRole, kv.gid, kv.me, ERROR, "op: %v seq error, expect %v but %v\n", op.Operation, kv.DuplicateTable[op.ClerkID].Seq+1, op.Seq)
 				}
 
 				kv.CurrentIndex++
 			} else if ch.SnapshotValid {
 				r := bytes.NewBuffer(ch.Snapshot)
 				d := labgob.NewDecoder(r)
-				if d.Decode(&kv.masterShards) != nil || d.Decode(&kv.DuplicateTable) != nil || d.Decode(&kv.CurrentIndex) != nil {
+				if d.Decode(&kv.MasterShards) != nil || d.Decode(&kv.DuplicateTable) != nil || d.Decode(&kv.CurrentIndex) != nil || d.Decode(&kv.FirstConfig) != nil {
 					DPrintf(ServerRole, kv.gid, kv.me, ERROR, "Decode failed in ApplyLogs\n")
 				} else {
 					if kv.CurrentIndex != ch.SnapshotIndex {
@@ -357,7 +370,7 @@ func (kv *ShardKV) PerformOperation(op Op) {
 	case "Get":
 		{
 			shard := key2shard(op.Key)
-			if kv.masterShards[shard].master != kv.gid {
+			if kv.MasterShards[shard].Master != kv.gid {
 				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
 					Seq: op.Seq,
 					Err: ErrWrongGroup,
@@ -365,7 +378,7 @@ func (kv *ShardKV) PerformOperation(op Op) {
 				return
 			}
 
-			value, ok := kv.masterShards[shard].Subject[op.Key]
+			value, ok := kv.MasterShards[shard].Subject[op.Key]
 			if !ok {
 				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
 					Seq: op.Seq,
@@ -382,7 +395,7 @@ func (kv *ShardKV) PerformOperation(op Op) {
 	case "Append":
 		{
 			shard := key2shard(op.Key)
-			if kv.masterShards[shard].master != kv.gid {
+			if kv.MasterShards[shard].Master != kv.gid {
 				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
 					Seq: op.Seq,
 					Err: ErrWrongGroup,
@@ -390,27 +403,29 @@ func (kv *ShardKV) PerformOperation(op Op) {
 				return
 			}
 
-			value, ok := kv.masterShards[shard].Subject[op.Key]
+			value, ok := kv.MasterShards[shard].Subject[op.Key]
 			if !ok {
-				kv.masterShards[shard].Subject[op.Key] = op.Value
+				kv.MasterShards[shard].Subject[op.Key] = op.Value
 
 				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
-					Seq: op.Seq,
-					Err: OK,
+					Seq:   op.Seq,
+					Value: kv.MasterShards[shard].Subject[op.Key],
+					Err:   OK,
 				}
 			} else {
-				kv.masterShards[shard].Subject[op.Key] = value + op.Value
+				kv.MasterShards[shard].Subject[op.Key] = value + op.Value
 
 				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
-					Seq: op.Seq,
-					Err: OK,
+					Seq:   op.Seq,
+					Value: kv.MasterShards[shard].Subject[op.Key],
+					Err:   OK,
 				}
 			}
 		}
 	case "Put":
 		{
 			shard := key2shard(op.Key)
-			if kv.masterShards[shard].master != kv.gid {
+			if kv.MasterShards[shard].Master != kv.gid {
 				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
 					Seq: op.Seq,
 					Err: ErrWrongGroup,
@@ -418,28 +433,33 @@ func (kv *ShardKV) PerformOperation(op Op) {
 				return
 			}
 
-			kv.masterShards[shard].Subject[op.Key] = op.Value
+			kv.MasterShards[shard].Subject[op.Key] = op.Value
 
 			kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
-				Seq: op.Seq,
-				Err: OK,
+				Seq:   op.Seq,
+				Value: kv.MasterShards[shard].Subject[op.Key],
+				Err:   OK,
 			}
 		}
 	case "RecvShards":
 		{
 			shard := int(op.ClerkID)
-			if op.ConfigNum <= kv.masterShards[shard].ConfigNum {
+			if op.ConfigNum <= kv.MasterShards[shard].ConfigNum {
+				kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
+					Seq: op.Seq,
+					Err: OK,
+				}
 				return
 			}
 
-			kv.masterShards[shard] = struct {
+			kv.MasterShards[shard] = struct {
 				ConfigNum int
-				master    int
-				servers   []string
+				Master    int
+				Servers   []string
 				Subject   map[string]string
 			}{
 				ConfigNum: op.ConfigNum,
-				master:    kv.gid,
+				Master:    kv.gid,
 				Subject:   op.Shards,
 			}
 
@@ -453,31 +473,41 @@ func (kv *ShardKV) PerformOperation(op Op) {
 			config := op.Config
 
 			for shard, gid := range config.Shards {
-				tmp := kv.masterShards[shard]
-				if tmp.ConfigNum < config.Num && tmp.master == kv.gid {
-					if gid == kv.gid {
-						tmp.ConfigNum = config.Num
-					} else {
-						tmp.master = gid
-						tmp.ConfigNum = config.Num
-						tmp.servers = config.Groups[gid]
+				tmp := kv.MasterShards[shard]
+				if tmp.ConfigNum < config.Num {
+					if config.Num == 1 && gid == kv.gid {
+						tmp.Master = gid
+					} else if tmp.Master == kv.gid {
+						if gid == kv.gid {
+							tmp.ConfigNum = config.Num
+						} else {
+							tmp.Master = gid
+							tmp.ConfigNum = config.Num
+							tmp.Servers = config.Groups[gid]
+						}
 					}
 
-					kv.masterShards[shard] = tmp
+					kv.MasterShards[shard] = tmp
 				}
 			}
+
+			if config.Num >= 1 {
+				kv.FirstConfig = true
+			}
+
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "Reconfig %v\n", op.Config.Num)
 		}
 	case "ShardsOver":
 		{
 
 			shard := op.ShardNum
-			tmp := kv.masterShards[shard]
+			tmp := kv.MasterShards[shard]
 
 			if op.ConfigNum == tmp.ConfigNum {
-				tmp.master = -1
+				tmp.Master = -1
 				tmp.Subject = make(map[string]string)
 
-				kv.masterShards[shard] = tmp
+				kv.MasterShards[shard] = tmp
 			}
 		}
 	}
@@ -491,9 +521,10 @@ func (kv *ShardKV) CheckSnapshot() {
 			if raftStateSize >= kv.maxraftstate-64 {
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
-				e.Encode(kv.masterShards)
+				e.Encode(kv.MasterShards)
 				e.Encode(kv.DuplicateTable)
 				e.Encode(kv.CurrentIndex)
+				e.Encode(kv.FirstConfig)
 				snapshot := w.Bytes()
 				kv.rf.Snapshot(kv.CurrentIndex, snapshot)
 			}
@@ -559,23 +590,23 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg, 100)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	kv.masterShards = make(map[int]struct {
+	kv.MasterShards = make(map[int]struct {
 		ConfigNum int
-		master    int
-		servers   []string
+		Master    int
+		Servers   []string
 		Subject   map[string]string
 	})
 
 	for i := 0; i < shardctrler.NShards; i++ {
-		kv.masterShards[i] = struct {
+		kv.MasterShards[i] = struct {
 			ConfigNum int
-			master    int
-			servers   []string
+			Master    int
+			Servers   []string
 			Subject   map[string]string
 		}{
 			ConfigNum: -1,
-			master:    -1,
-			servers:   make([]string, 0),
+			Master:    -1,
+			Servers:   make([]string, 0),
 			Subject:   make(map[string]string),
 		}
 	}
@@ -586,9 +617,12 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.persister = persister
 
+	kv.FirstConfig = false
+
 	go kv.ApplyLogs()
 	go kv.MonitorConfig()
 	go kv.CheckSnapshot()
+	go kv.TransferShards()
 
 	return kv
 }
