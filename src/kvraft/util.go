@@ -8,7 +8,7 @@ import (
 )
 
 // Debugging
-const Debug = true
+const Debug = false
 
 type LogLevel int
 
@@ -66,7 +66,7 @@ func currentLogLevel() LogLevel {
 }
 
 func DPrintf(role ConnectionRole, me int, level LogLevel, format string, a ...interface{}) (n int, err error) {
-	if level < currentLogLevel() {
+	if level < currentLogLevel() || Debug == false {
 		return
 	}
 	now := time.Now()

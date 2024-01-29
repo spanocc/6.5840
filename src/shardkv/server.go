@@ -52,6 +52,11 @@ import (
 // 同理，切片相关的且不需要回复发送端的 ，不能通过dup数组来判断是否完成过了，因为reconfigure不能判断是否完成了
 // recvshards 需要回复发送端，所以流程和get，put一样
 
+// 要特别注意第一个配置的初始化 因为第一个配置的切片不会由别人发送
+
+// 注意可能出现：
+// 配置10中 gid 1 持有切片 1， 配置11中 gid 2 持有切片 1. 如果gid1中完成了操作，那gid2不可以重复操作。（可能出现gid1完成了，但客户端没收到，所以又发送给了gid2）所以在切片传递时还要传递dup数组来判断重复
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -65,6 +70,7 @@ type Op struct {
 	Shards    map[string]string
 	ShardNum  int
 	ConfigNum int
+	Dup       map[int64]DuplicateTableEntry
 }
 
 type DuplicateTableEntry struct {
@@ -188,13 +194,14 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Unlock()
 }
 
-func (kv *ShardKV) SendShards(servers []string, configNum int, shardNum int, shards map[string]string) {
+func (kv *ShardKV) SendShards(servers []string, configNum int, shardNum int, shards map[string]string, dup map[int64]DuplicateTableEntry) {
 	args := ShardsArgs{}
 	args.ConfigNum = configNum
 	args.ShardNum = shardNum
 	args.Shards = shards
+	args.DuplicateTable = dup
 
-	DPrintf(ServerRole, kv.gid, kv.me, INFO, "send shards start, servers: %v, shards: %v", servers, shardNum)
+	// DPrintf(ServerRole, kv.gid, kv.me, INFO, "send shards start, servers: %v, shards: %v", servers, shardNum)
 
 Loop:
 	for {
@@ -212,7 +219,7 @@ Loop:
 		}
 	}
 
-	DPrintf(ServerRole, kv.gid, kv.me, INFO, "send shards succ, servers: %v, shards: %v, subject: %v", servers, shardNum, shards)
+	// DPrintf(ServerRole, kv.gid, kv.me, INFO, "send shards succ, servers: %v, shards: %v, subject: %v", servers, shardNum, shards)
 
 	op := Op{
 		Operation: "ShardsOver",
@@ -237,6 +244,7 @@ func (kv *ShardKV) RecvShards(args *ShardsArgs, reply *ShardsReply) {
 			Seq:       int64(args.ConfigNum),
 			ConfigNum: args.ConfigNum,
 			Shards:    args.Shards,
+			Dup:       args.DuplicateTable,
 		}
 
 		index, term, isLeader := kv.rf.Start(op)
@@ -302,7 +310,13 @@ func (kv *ShardKV) TransferShards() {
 					transferShards[k] = v
 				}
 
-				go kv.SendShards(shards.Servers, shards.ConfigNum, shardNum, transferShards)
+				dup := map[int64]DuplicateTableEntry{}
+
+				for k, v := range kv.DuplicateTable {
+					dup[k] = v
+				}
+
+				go kv.SendShards(shards.Servers, shards.ConfigNum, shardNum, transferShards, dup)
 			}
 		}
 
@@ -333,9 +347,9 @@ func (kv *ShardKV) ApplyLogs() {
 				}
 
 				if op.Operation == "Reconfigure" || op.Operation == "ShardsOver" || op.Operation == "RecvShards" {
-					kv.PerformOperation(op)
+					kv.PerformOperation(op, ch.CommandIndex)
 				} else if op.Seq >= kv.DuplicateTable[op.ClerkID].Seq+1 || (op.Seq == kv.DuplicateTable[op.ClerkID].Seq && kv.DuplicateTable[op.ClerkID].Err == ErrWrongGroup) {
-					kv.PerformOperation(op)
+					kv.PerformOperation(op, ch.CommandIndex)
 				} else if op.Seq < kv.DuplicateTable[op.ClerkID].Seq+1 {
 
 				} else {
@@ -365,7 +379,7 @@ func (kv *ShardKV) ApplyLogs() {
 	}
 }
 
-func (kv *ShardKV) PerformOperation(op Op) {
+func (kv *ShardKV) PerformOperation(op Op, commandIndex int) {
 	switch op.Operation {
 	case "Get":
 		{
@@ -391,6 +405,8 @@ func (kv *ShardKV) PerformOperation(op Op) {
 					Err:   OK,
 				}
 			}
+
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "finish op: %v, key: %v, value: %v, now: %v, index: %v\n", op.Operation, op.Key, op.Value, kv.MasterShards[shard].Subject[op.Key], commandIndex)
 		}
 	case "Append":
 		{
@@ -421,6 +437,8 @@ func (kv *ShardKV) PerformOperation(op Op) {
 					Err:   OK,
 				}
 			}
+
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "finish op: %v, key: %v, value: %v, now: %v, index: %v\n", op.Operation, op.Key, op.Value, kv.MasterShards[shard].Subject[op.Key], commandIndex)
 		}
 	case "Put":
 		{
@@ -440,7 +458,10 @@ func (kv *ShardKV) PerformOperation(op Op) {
 				Value: kv.MasterShards[shard].Subject[op.Key],
 				Err:   OK,
 			}
+
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "finish op: %v, key: %v, value: %v, now: %v, index: %v\n", op.Operation, op.Key, op.Value, kv.MasterShards[shard].Subject[op.Key], commandIndex)
 		}
+
 	case "RecvShards":
 		{
 			shard := int(op.ClerkID)
@@ -460,13 +481,32 @@ func (kv *ShardKV) PerformOperation(op Op) {
 			}{
 				ConfigNum: op.ConfigNum,
 				Master:    kv.gid,
-				Subject:   op.Shards,
+				// Subject:   op.Shards,  bug 出在这里
+				Subject: make(map[string]string),
+			}
+
+			for k, v := range op.Shards {
+				kv.MasterShards[shard].Subject[k] = v
+			}
+
+			for k, v := range op.Dup {
+				if kv.DuplicateTable[k].Seq < v.Seq || (kv.DuplicateTable[k].Seq == v.Seq && v.Err == OK) {
+					kv.DuplicateTable[k] = v
+				}
 			}
 
 			kv.DuplicateTable[op.ClerkID] = DuplicateTableEntry{
 				Seq: op.Seq,
 				Err: OK,
 			}
+
+			now_config := []int{}
+			for shard := range kv.MasterShards {
+				now_config = append(now_config, kv.MasterShards[shard].Master)
+			}
+
+			// DPrintf(ServerRole, kv.gid, kv.me, INFO, "RecvShards shard: %v, configNum: %v, now config: %v, index: %v, subject: %v\n", shard, op.ConfigNum, now_config, commandIndex, op.Shards)
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "RecvShards shard: %v, configNum: %v, now config: %v, index: %v\n", shard, op.ConfigNum, now_config, commandIndex)
 		}
 	case "Reconfigure":
 		{
@@ -495,7 +535,12 @@ func (kv *ShardKV) PerformOperation(op Op) {
 				kv.FirstConfig = true
 			}
 
-			DPrintf(ServerRole, kv.gid, kv.me, INFO, "Reconfig %v\n", op.Config.Num)
+			now_config := []int{}
+			for shard := range kv.MasterShards {
+				now_config = append(now_config, kv.MasterShards[shard].Master)
+			}
+
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "Reconfig %v, now config: %v, index: %v\n", op.Config.Num, now_config, commandIndex)
 		}
 	case "ShardsOver":
 		{
@@ -509,6 +554,13 @@ func (kv *ShardKV) PerformOperation(op Op) {
 
 				kv.MasterShards[shard] = tmp
 			}
+
+			now_config := []int{}
+			for shard := range kv.MasterShards {
+				now_config = append(now_config, kv.MasterShards[shard].Master)
+			}
+
+			DPrintf(ServerRole, kv.gid, kv.me, INFO, "ShardsOver shard: %v, configNum: %v, now config: %v, index: %v\n", shard, op.ConfigNum, now_config, commandIndex)
 		}
 	}
 }

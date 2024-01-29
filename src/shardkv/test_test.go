@@ -35,8 +35,6 @@ func TestStaticShards(t *testing.T) {
 	cfg.join(0)
 	cfg.join(1)
 
-	fmt.Println("111111111")
-
 	n := 10
 	ka := make([]string, n)
 	va := make([]string, n)
@@ -48,8 +46,6 @@ func TestStaticShards(t *testing.T) {
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 	}
-
-	fmt.Println("22222222222")
 
 	// make sure that the data really is sharded by
 	// shutting down one shard and checking that some

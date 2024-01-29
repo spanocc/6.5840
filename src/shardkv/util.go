@@ -8,7 +8,7 @@ import (
 )
 
 // Debugging
-var Debug = true
+var Debug = false
 
 type LogLevel int
 

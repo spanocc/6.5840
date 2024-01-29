@@ -49,9 +49,10 @@ type GetReply struct {
 }
 
 type ShardsArgs struct {
-	ShardNum  int
-	Shards    map[string]string
-	ConfigNum int
+	ShardNum       int
+	Shards         map[string]string
+	ConfigNum      int
+	DuplicateTable map[int64]DuplicateTableEntry // 如果两个组先后服务一个切片，那需要传递这个数据来去重
 }
 
 type ShardsReply struct {

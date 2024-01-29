@@ -130,6 +130,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					break
 				}
 				// ... not ok, or ErrWrongLeader
+				if ok && reply.Err == ErrWrongLeader {
+					DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "ErrWrongLeader gid: %v shard %v, %v key: %v, value: %v\n", gid, shard, op, key, value)
+				} else if !ok {
+					DPrintf(ClerkRole, int(ck.clerkID), int(ck.seq), INFO, "not ok gid: %v shard %v, %v key: %v, value: %v\n", gid, shard, op, key, value)
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -8,7 +8,7 @@ import (
 )
 
 // Debugging
-const Debug = true
+const Debug = false
 
 type LogLevel int
 
@@ -66,7 +66,7 @@ func IsLogStarted() bool {
 }
 
 func DPrintf(role RaftRole, serverId int, term int, level LogLevel, format string, a ...interface{}) (n int, err error) {
-	if !IsLogStarted() {
+	if !IsLogStarted() || Debug == false {
 		return
 	}
 
