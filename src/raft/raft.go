@@ -765,7 +765,7 @@ func (rf *Raft) UpdateTerm(term int) {
 	// 从Leader或Candidate变成leader要开启定时器
 	if rf.role != Follower {
 		rf.role = Follower
-		rf.ResetElectionTime()
+		// rf.ResetElectionTime()
 	}
 	rf.votedNum = 0
 }
@@ -921,7 +921,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.leader = args.LeaderId
 		rf.UpdateTerm(args.Term)
 		rf.persist()
-		rf.ResetElectionTime()
+		// rf.ResetElectionTime()
 		if args.LastIncludedIndex > rf.snapshotIndex {
 			if args.LastIncludedIndex >= rf.getLastLogIndex() {
 				rf.logs = make([]LogEntry, 0)
